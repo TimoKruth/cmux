@@ -115,7 +115,8 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
         webView.uiDelegate = nil
     }
 
-    func triggerFlash() {
+    func triggerFlash(reason: WorkspaceAttentionFlashReason) {
+        _ = reason
         guard NotificationPaneFlashSettings.isEnabled() else { return }
         focusFlashToken &+= 1
     }

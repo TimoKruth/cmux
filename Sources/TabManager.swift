@@ -5184,11 +5184,13 @@ extension TabManager {
         for workspaceSnapshot in workspaceSnapshots {
             let ordinal = Self.nextPortOrdinal
             Self.nextPortOrdinal += 1
+            let isTaskWorkspace = workspaceSnapshot.writers?.isEmpty == false
             let workspace = Workspace(
                 title: workspaceSnapshot.processTitle,
                 workingDirectory: workspaceSnapshot.currentDirectory,
                 workspaceId: workspaceSnapshot.id,
-                portOrdinal: ordinal
+                portOrdinal: ordinal,
+                skipInitialTerminal: isTaskWorkspace
             )
             if workspaceSnapshot.id == nil {
                 legacyRestoredWorkspaceIds.insert(workspace.id)

@@ -8545,10 +8545,11 @@ struct VerticalTabsSidebar: View {
                                         tab: tab,
                                         index: index,
                                         isActive: tabManager.selectedTabId == tab.id,
-                                        workspaceShortcutDigit: WorkspaceShortcutMapper.commandDigitForWorkspace(
+                                        workspaceShortcutDigit: WorkspaceShortcutMapper.digitForWorkspace(
                                             at: index,
                                             workspaceCount: workspaceCount
                                         ),
+                                        workspaceShortcutModifierSymbol: workspaceNumberShortcut.modifierDisplayString,
                                         canCloseWorkspace: canCloseWorkspace,
                                         accessibilityWorkspaceCount: workspaceCount,
                                         unreadCount: notificationStore.unreadCount(forTabId: tab.id),

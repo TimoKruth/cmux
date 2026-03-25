@@ -277,8 +277,21 @@ extension Workspace {
             currentDirectory = normalizedCurrentDirectory
         }
 
-        let panelSnapshotsById = Dictionary(uniqueKeysWithValues: snapshot.panels.map { ($0.id, $0) })
-        let leafEntries = restoreSessionLayout(snapshot.layout)
+        // Task workspaces (those with writers) should only contain chat panels.
+        // Strip non-chat panels from the snapshot before restoring to prevent
+        // stale terminals from reappearing after upstream merges or layout drift.
+        var effectiveSnapshot = snapshot
+        if let writers = snapshot.writers, !writers.isEmpty {
+            let chatPanelIds = Set(snapshot.panels.filter { $0.type == .chat }.map { $0.id })
+            effectiveSnapshot.panels = snapshot.panels.filter { $0.type == .chat }
+            effectiveSnapshot.layout = Self.sanitizedLayout(snapshot.layout, allowedPanelIds: chatPanelIds)
+            if let focused = snapshot.focusedPanelId, !chatPanelIds.contains(focused) {
+                effectiveSnapshot.focusedPanelId = effectiveSnapshot.panels.first?.id
+            }
+        }
+
+        let panelSnapshotsById = Dictionary(uniqueKeysWithValues: effectiveSnapshot.panels.map { ($0.id, $0) })
+        let leafEntries = restoreSessionLayout(effectiveSnapshot.layout)
         var oldToNewPanelIds: [UUID: UUID] = [:]
 
         for entry in leafEntries {
@@ -291,7 +304,7 @@ extension Workspace {
         }
 
         pruneSurfaceMetadata(validSurfaceIds: Set(panels.keys))
-        applySessionDividerPositions(snapshotNode: snapshot.layout, liveNode: bonsplitController.treeSnapshot())
+        applySessionDividerPositions(snapshotNode: effectiveSnapshot.layout, liveNode: bonsplitController.treeSnapshot())
 
         applyProcessTitle(snapshot.processTitle)
         setCustomTitle(snapshot.customTitle)
@@ -316,7 +329,7 @@ extension Workspace {
 
         recomputeListeningPorts()
 
-        if let focusedOldPanelId = snapshot.focusedPanelId,
+        if let focusedOldPanelId = effectiveSnapshot.focusedPanelId,
            let focusedNewPanelId = oldToNewPanelIds[focusedOldPanelId],
            panels[focusedNewPanelId] != nil {
             focusPanel(focusedNewPanelId)
@@ -350,6 +363,43 @@ extension Workspace {
             self.writers = []
             self.activeWriterId = nil
             self.isWritersExpanded = false
+        }
+    }
+
+    /// Strip panels not in `allowedPanelIds` from the layout tree and collapse
+    /// empty branches so task workspaces restore without stale terminals.
+    private static func sanitizedLayout(
+        _ layout: SessionWorkspaceLayoutSnapshot,
+        allowedPanelIds: Set<UUID>
+    ) -> SessionWorkspaceLayoutSnapshot {
+        switch layout {
+        case .pane(var pane):
+            pane.panelIds = pane.panelIds.filter { allowedPanelIds.contains($0) }
+            if let sel = pane.selectedPanelId, !allowedPanelIds.contains(sel) {
+                pane.selectedPanelId = pane.panelIds.first
+            }
+            return .pane(pane)
+        case .split(let split):
+            let first = sanitizedLayout(split.first, allowedPanelIds: allowedPanelIds)
+            let second = sanitizedLayout(split.second, allowedPanelIds: allowedPanelIds)
+            let firstEmpty = Self.layoutIsEmpty(first)
+            let secondEmpty = Self.layoutIsEmpty(second)
+            if firstEmpty && secondEmpty { return .pane(SessionPaneLayoutSnapshot(panelIds: [], selectedPanelId: nil)) }
+            if firstEmpty { return second }
+            if secondEmpty { return first }
+            return .split(SessionSplitLayoutSnapshot(
+                orientation: split.orientation,
+                dividerPosition: split.dividerPosition,
+                first: first,
+                second: second
+            ))
+        }
+    }
+
+    private static func layoutIsEmpty(_ layout: SessionWorkspaceLayoutSnapshot) -> Bool {
+        switch layout {
+        case .pane(let pane): return pane.panelIds.isEmpty
+        case .split(let split): return layoutIsEmpty(split.first) && layoutIsEmpty(split.second)
         }
     }
 
