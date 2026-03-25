@@ -75,6 +75,9 @@ echo "▸ Quitting any running ${APP_NAME}..."
 sleep 0.3
 pkill -f "${APP_NAME}.app/Contents/MacOS/cmux" 2>/dev/null || true
 sleep 0.3
+# Kill orphaned t3code sidecar processes from the previous installation
+pkill -f "node.*t3code.*index.mjs" 2>/dev/null || true
+sleep 0.2
 
 INSTALL_PATH="${INSTALL_DIR}/${APP_NAME}.app"
 echo "▸ Installing to ${INSTALL_PATH}..."
