@@ -116,14 +116,16 @@ final class T3CodeSidecarManager {
         proc.standardOutput = FileHandle.nullDevice
         proc.standardError = FileHandle.nullDevice
 
-        // Handle unexpected termination
-        proc.terminationHandler = { [weak self] proc in
-            guard let self = self, !self.isShuttingDown else { return }
-            self.logger.error("t3code sidecar exited unexpectedly (code \(proc.terminationStatus))")
-            self.process = nil
-            self.port = nil
-            self.stopPortPolling()
-            DispatchQueue.main.async {
+        // Handle unexpected termination.
+        // Dispatch to main thread to avoid data races — terminationHandler
+        // fires on an unspecified background thread.
+        proc.terminationHandler = { [weak self] terminatedProc in
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self, !self.isShuttingDown else { return }
+                self.logger.error("t3code sidecar exited unexpectedly (code \(terminatedProc.terminationStatus))")
+                self.process = nil
+                self.port = nil
+                self.stopPortPolling()
                 self.onCrash?()
             }
         }
@@ -134,7 +136,9 @@ final class T3CodeSidecarManager {
             logger.info(
                 "Spawned t3code sidecar (PID \(proc.processIdentifier)) on port \(selectedPort) for \(self.projectDirectory.path)"
             )
-            publishPort(selectedPort)
+            // Don't call publishPort here — defer onReady until the port file
+            // confirms the actual port. This avoids the race where the OS
+            // recycles our reserved port before the server binds it.
         } catch {
             logger.error("Failed to spawn t3code sidecar: \(error.localizedDescription)")
             port = nil
@@ -158,11 +162,14 @@ final class T3CodeSidecarManager {
         logger.info("Shutting down t3code sidecar (PID \(proc.processIdentifier))")
         proc.terminate()  // SIGTERM
 
-        // Force kill after 5 seconds if still running
+        // Capture proc locally — process is cleared below, so the delayed
+        // closure must hold its own strong reference to send SIGKILL.
+        let capturedProc = proc
+        let capturedPID = proc.processIdentifier
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) { [weak self] in
-            guard let self = self, let proc = self.process, proc.isRunning else { return }
-            self.logger.warning("Force killing t3code sidecar (PID \(proc.processIdentifier))")
-            kill(proc.processIdentifier, SIGKILL)
+            guard capturedProc.isRunning else { return }
+            self?.logger.warning("Force killing t3code sidecar (PID \(capturedPID))")
+            kill(capturedPID, SIGKILL)
         }
 
         process = nil
@@ -239,8 +246,11 @@ final class T3CodeSidecarManager {
     }
 
     private func publishPort(_ port: Int) {
+        let isNewPort = self.port != port
         self.port = port
-        guard !hasPublishedPort else { return }
+        // Publish if we haven't yet, or if the confirmed port differs
+        // from the initially reserved port (TOCTOU correction).
+        guard !hasPublishedPort || isNewPort else { return }
         hasPublishedPort = true
         DispatchQueue.main.async { [weak self] in
             self?.onReady?(port)

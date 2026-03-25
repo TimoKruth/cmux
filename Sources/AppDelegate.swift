@@ -4354,6 +4354,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         startSidecar(for: workspace)
     }
 
+    /// Clean up the sidecar tracking entry for a closed workspace.
+    /// The actual shutdown is performed by TabManager.closeWorkspace via
+    /// workspace.t3codeSidecarManager.shutdown().
+    func removeSidecarTracking(for workspaceId: UUID) {
+        sidecarManagers.removeValue(forKey: workspaceId)
+    }
+
     /// Start a t3code sidecar for the given workspace.
     private func startSidecar(for workspace: Workspace) {
         let directory = workspace.currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)

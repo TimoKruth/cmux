@@ -2238,6 +2238,11 @@ class TabManager: ObservableObject {
             project.workspaceIds.removeAll { $0 == workspace.id }
         }
 
+        // Shut down the t3code sidecar to avoid orphaned Node.js processes.
+        workspace.t3codeSidecarManager?.shutdown()
+        workspace.t3codeSidecarManager = nil
+        AppDelegate.shared?.removeSidecarTracking(for: workspace.id)
+
         AppDelegate.shared?.notificationStore?.clearNotifications(forTabId: workspace.id)
         workspace.teardownAllPanels()
         workspace.teardownRemoteConnection()

@@ -144,9 +144,16 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
         // Build query parameters. Always include embedded=1; optionally
         // include projectCwd so t3code can bind to the correct project.
         var queryItems = "embedded=1"
-        if let cwd = projectCwd,
-           let encodedCwd = cwd.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
-            queryItems += "&projectCwd=\(encodedCwd)"
+        if let cwd = projectCwd {
+            // Use URLQueryItem via URLComponents for correct encoding —
+            // .urlQueryAllowed leaves & and = unescaped, which would break
+            // paths containing those characters.
+            var components = URLComponents()
+            components.queryItems = [URLQueryItem(name: "projectCwd", value: cwd)]
+            // percentEncodedQuery gives us "projectCwd=<properly-encoded>"
+            if let encoded = components.percentEncodedQuery {
+                queryItems += "&\(encoded)"
+            }
         }
 
         if let threadId = normalizedThreadId,
