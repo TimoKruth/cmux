@@ -132,6 +132,10 @@
 		AA3004000000000000000004 /* ChatPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3004000000000000000014 /* ChatPanel.swift */; };
 		AA3005000000000000000005 /* ChatPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3005000000000000000015 /* ChatPanelView.swift */; };
 		AA3006000000000000000006 /* Project.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3006000000000000000016 /* Project.swift */; };
+		AA3007000000000000000007 /* AppDelegate+T3Code.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3007000000000000000017 /* AppDelegate+T3Code.swift */; };
+		AA3008000000000000000008 /* SessionPersistence+T3Code.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3008000000000000000018 /* SessionPersistence+T3Code.swift */; };
+		AA3009000000000000000009 /* Workspace+T3Code.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA3009000000000000000019 /* Workspace+T3Code.swift */; };
+		AA300A00000000000000000A /* TabManager+T3Code.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA300A00000000000000001A /* TabManager+T3Code.swift */; };
 					C1A2B3C4D5E6F70800000001 /* CmuxConfigTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1A2B3C4D5E6F70800000002 /* CmuxConfigTests.swift */; };
 		/* End PBXBuildFile section */
 
@@ -311,6 +315,10 @@
 		AA3004000000000000000014 /* ChatPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ChatPanel.swift; sourceTree = "<group>"; };
 		AA3005000000000000000015 /* ChatPanelView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ChatPanelView.swift; sourceTree = "<group>"; };
 		AA3006000000000000000016 /* Project.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Project.swift; sourceTree = "<group>"; };
+		AA3007000000000000000017 /* AppDelegate+T3Code.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "AppDelegate+T3Code.swift"; sourceTree = "<group>"; };
+		AA3008000000000000000018 /* SessionPersistence+T3Code.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SessionPersistence+T3Code.swift"; sourceTree = "<group>"; };
+		AA3009000000000000000019 /* Workspace+T3Code.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Workspace+T3Code.swift"; sourceTree = "<group>"; };
+		AA300A00000000000000001A /* TabManager+T3Code.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "TabManager+T3Code.swift"; sourceTree = "<group>"; };
 				C1A2B3C4D5E6F70800000002 /* CmuxConfigTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxConfigTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -484,6 +492,10 @@
 				AA3004000000000000000014 /* ChatPanel.swift */,
 				AA3005000000000000000015 /* ChatPanelView.swift */,
 				AA3006000000000000000016 /* Project.swift */,
+				AA3007000000000000000017 /* AppDelegate+T3Code.swift */,
+				AA3008000000000000000018 /* SessionPersistence+T3Code.swift */,
+				AA3009000000000000000019 /* Workspace+T3Code.swift */,
+				AA300A00000000000000001A /* TabManager+T3Code.swift */,
 				A5001651 /* CmuxConfig.swift */,
 				A5001653 /* CmuxConfigExecutor.swift */,
 				A5001655 /* CmuxDirectoryTrust.swift */,
@@ -789,6 +801,10 @@
 				AA3004000000000000000004 /* ChatPanel.swift in Sources */,
 				AA3005000000000000000005 /* ChatPanelView.swift in Sources */,
 				AA3006000000000000000006 /* Project.swift in Sources */,
+				AA3007000000000000000007 /* AppDelegate+T3Code.swift in Sources */,
+				AA3008000000000000000008 /* SessionPersistence+T3Code.swift in Sources */,
+				AA3009000000000000000009 /* Workspace+T3Code.swift in Sources */,
+				AA300A00000000000000000A /* TabManager+T3Code.swift in Sources */,
 				A5001650 /* CmuxConfig.swift in Sources */,
 				A5001652 /* CmuxConfigExecutor.swift in Sources */,
 				A5001654 /* CmuxDirectoryTrust.swift in Sources */,

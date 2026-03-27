@@ -64,11 +64,16 @@ BUILT_APP="${DERIVED_DATA}/Build/Products/Release/cmux.app"
 [[ ! -d "$BUILT_APP" ]] && echo "error: cmux.app not found" >&2 && exit 1
 
 CMUXD_SRC="${REPO_ROOT}/cmuxd/zig-out/bin/cmuxd"
-[[ -d "${REPO_ROOT}/cmuxd" ]] && echo "▸ Building cmuxd..." && (cd "${REPO_ROOT}/cmuxd" && zig build -Doptimize=ReleaseFast) || true
+if [[ -d "${REPO_ROOT}/cmuxd" ]]; then
+  echo "▸ Building cmuxd..."
+  (cd "${REPO_ROOT}/cmuxd" && zig build -Doptimize=ReleaseFast) || { echo "warning: cmuxd build failed" >&2; }
+fi
 
 GHOSTTY_HELPER_SRC="${REPO_ROOT}/ghostty/zig-out/bin/ghostty"
-[[ -d "${REPO_ROOT}/ghostty" ]] && command -v zig >/dev/null 2>&1 && echo "▸ Building ghostty helper..." && \
-  (cd "${REPO_ROOT}/ghostty" && zig build cli-helper -Dapp-runtime=none -Demit-macos-app=false -Demit-xcframework=false -Doptimize=ReleaseFast) || true
+if [[ -d "${REPO_ROOT}/ghostty" ]] && command -v zig >/dev/null 2>&1; then
+  echo "▸ Building ghostty helper..."
+  (cd "${REPO_ROOT}/ghostty" && zig build cli-helper -Dapp-runtime=none -Demit-macos-app=false -Demit-xcframework=false -Doptimize=ReleaseFast) || { echo "warning: ghostty helper build failed" >&2; }
+fi
 
 echo "▸ Quitting any running ${APP_NAME}..."
 /usr/bin/osascript -e "tell application id \"${BUNDLE_ID}\" to quit" >/dev/null 2>&1 || true
@@ -113,7 +118,7 @@ mkdir -p "$BIN_DIR"
 [[ -x "$GHOSTTY_HELPER_SRC" ]] && cp "$GHOSTTY_HELPER_SRC" "$BIN_DIR/ghostty" && chmod +x "$BIN_DIR/ghostty" && echo "▸ Bundled ghostty"
 
 echo "▸ Re-codesigning..."
-/usr/bin/codesign --force --deep --sign - --timestamp=none --generate-entitlement-der "$INSTALL_PATH" >/dev/null 2>&1 || true
+/usr/bin/codesign --force --deep --sign - --timestamp=none --generate-entitlement-der "$INSTALL_PATH" >/dev/null 2>&1 || { echo "warning: code signing failed — app may not launch correctly" >&2; }
 
 [[ -S "$CMUXD_SOCKET" ]] && rm -f "$CMUXD_SOCKET"
 [[ -S "$CMUX_SOCKET" ]] && rm -f "$CMUX_SOCKET"

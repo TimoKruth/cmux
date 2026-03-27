@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Combine
 
@@ -40,5 +41,21 @@ final class Project: ObservableObject, Identifiable, Codable {
         try container.encode(directory, forKey: .directory)
         try container.encode(workspaceIds, forKey: .workspaceIds)
         try container.encode(isExpanded, forKey: .isExpanded)
+    }
+
+    // MARK: - New Project Panel
+
+    /// Present the "New Project" directory picker and return the selected name/directory.
+    /// Returns `nil` when the user cancels.
+    @MainActor
+    static func promptForProjectDirectory() -> (name: String, directory: String)? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = String(localized: "project.newProject.panelPrompt", defaultValue: "Choose Project Directory")
+        panel.message = String(localized: "project.newProject.panelMessage", defaultValue: "Select the root directory for your project")
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return (name: url.lastPathComponent, directory: url.path)
     }
 }

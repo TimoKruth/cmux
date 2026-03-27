@@ -583,15 +583,8 @@ struct HiddenTitlebarSidebarControlsView: View {
             onNewTab: { _ = AppDelegate.shared?.tabManager?.addTab() },
             visibilityMode: .onHover,
             onNewProject: {
-                let panel = NSOpenPanel()
-                panel.canChooseFiles = false
-                panel.canChooseDirectories = true
-                panel.allowsMultipleSelection = false
-                panel.prompt = String(localized: "titlebar.newProject.panelPrompt", defaultValue: "Choose Project Directory")
-                panel.message = String(localized: "titlebar.newProject.panelMessage", defaultValue: "Select the root directory for your project")
-                if panel.runModal() == .OK, let url = panel.url {
-                    let projectName = url.lastPathComponent
-                    AppDelegate.shared?.tabManager?.addProject(name: projectName, directory: url.path)
+                if let result = Project.promptForProjectDirectory() {
+                    AppDelegate.shared?.tabManager?.addProject(name: result.name, directory: result.directory)
                 }
             }
         )
@@ -818,15 +811,8 @@ final class TitlebarControlsAccessoryViewController: NSTitlebarAccessoryViewCont
         let toggleNotifications: () -> Void = { _ = AppDelegate.shared?.toggleNotificationsPopover(animated: true) }
         let newTab = { _ = AppDelegate.shared?.tabManager?.addTab() }
         let newProject = {
-            let panel = NSOpenPanel()
-            panel.canChooseFiles = false
-            panel.canChooseDirectories = true
-            panel.allowsMultipleSelection = false
-            panel.prompt = String(localized: "titlebar.newProject.panelPrompt", defaultValue: "Choose Project Directory")
-            panel.message = String(localized: "titlebar.newProject.panelMessage", defaultValue: "Select the root directory for your project")
-            if panel.runModal() == .OK, let url = panel.url {
-                let projectName = url.lastPathComponent
-                AppDelegate.shared?.tabManager?.addProject(name: projectName, directory: url.path)
+            if let result = Project.promptForProjectDirectory() {
+                AppDelegate.shared?.tabManager?.addProject(name: result.name, directory: result.directory)
             }
         }
 

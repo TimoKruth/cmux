@@ -597,15 +597,8 @@ struct cmuxApp: App {
                 Divider()
 
                 Button(String(localized: "menu.file.newProject", defaultValue: "New Project…")) {
-                    let panel = NSOpenPanel()
-                    panel.canChooseFiles = false
-                    panel.canChooseDirectories = true
-                    panel.allowsMultipleSelection = false
-                    panel.prompt = String(localized: "menu.file.newProject.panelPrompt", defaultValue: "Choose Project Directory")
-                    panel.message = String(localized: "menu.file.newProject.panelMessage", defaultValue: "Select the root directory for your project")
-                    if panel.runModal() == .OK, let url = panel.url {
-                        let projectName = url.lastPathComponent
-                        activeTabManager.addProject(name: projectName, directory: url.path)
+                    if let result = Project.promptForProjectDirectory() {
+                        activeTabManager.addProject(name: result.name, directory: result.directory)
                     }
                 }
                 .keyboardShortcut("n", modifiers: [.command, .option])

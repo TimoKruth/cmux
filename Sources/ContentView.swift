@@ -2451,15 +2451,8 @@ struct ContentView: View {
             visibilityMode: .alwaysVisible,
             onNewProject: { [weak tabManager] in
                 guard let tabManager else { return }
-                let panel = NSOpenPanel()
-                panel.canChooseFiles = false
-                panel.canChooseDirectories = true
-                panel.allowsMultipleSelection = false
-                panel.prompt = String(localized: "fullscreen.newProject.panelPrompt", defaultValue: "Choose Project Directory")
-                panel.message = String(localized: "fullscreen.newProject.panelMessage", defaultValue: "Select the root directory for your project")
-                if panel.runModal() == .OK, let url = panel.url {
-                    let projectName = url.lastPathComponent
-                    tabManager.addProject(name: projectName, directory: url.path)
+                if let result = Project.promptForProjectDirectory() {
+                    tabManager.addProject(name: result.name, directory: result.directory)
                 }
             }
         )
@@ -6031,15 +6024,8 @@ struct ContentView: View {
         registry.register(commandId: "palette.newProject") {
             // Defer so the command palette dismisses before the modal sheet appears.
             DispatchQueue.main.async {
-                let panel = NSOpenPanel()
-                panel.canChooseFiles = false
-                panel.canChooseDirectories = true
-                panel.allowsMultipleSelection = false
-                panel.prompt = String(localized: "panel.newProject.prompt", defaultValue: "Choose Project Directory")
-                panel.message = String(localized: "panel.newProject.message", defaultValue: "Select the root directory for your project")
-                if panel.runModal() == .OK, let url = panel.url {
-                    let projectName = url.lastPathComponent
-                    tabManager.addProject(name: projectName, directory: url.path)
+                if let result = Project.promptForProjectDirectory() {
+                    tabManager.addProject(name: result.name, directory: result.directory)
                 }
             }
         }
@@ -10932,15 +10918,8 @@ private struct SidebarEmptyArea: View {
 
     private func showNewProjectDialog() {
         DispatchQueue.main.async {
-            let panel = NSOpenPanel()
-            panel.canChooseFiles = false
-            panel.canChooseDirectories = true
-            panel.allowsMultipleSelection = false
-            panel.prompt = String(localized: "sidebar.newProject.panelPrompt", defaultValue: "Choose Project Directory")
-            panel.message = String(localized: "sidebar.newProject.panelMessage", defaultValue: "Select the root directory for your project")
-            if panel.runModal() == .OK, let url = panel.url {
-                let projectName = url.lastPathComponent
-                tabManager.addProject(name: projectName, directory: url.path)
+            if let result = Project.promptForProjectDirectory() {
+                tabManager.addProject(name: result.name, directory: result.directory)
             }
         }
     }

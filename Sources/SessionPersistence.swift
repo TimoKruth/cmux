@@ -240,15 +240,6 @@ struct SessionMarkdownPanelSnapshot: Codable, Sendable {
     var filePath: String
 }
 
-/// Snapshot of a single writer (task/topic) within a workspace.
-struct SessionWriterSnapshot: Codable, Sendable {
-    let id: UUID
-    var name: String
-    var t3codeThreadId: String?
-    var chatPanelId: UUID?
-    var layout: SessionWorkspaceLayoutSnapshot?
-}
-
 struct SessionPanelSnapshot: Codable, Sendable {
     var id: UUID
     var type: PanelType
@@ -353,14 +344,6 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var gitBranch: SessionGitBranchSnapshot?
     var writers: [SessionWriterSnapshot]?
     var activeWriterId: UUID?
-}
-
-struct SessionProjectSnapshot: Codable, Sendable {
-    var id: UUID
-    var name: String
-    var directory: String
-    var workspaceIds: [UUID]
-    var isExpanded: Bool
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {

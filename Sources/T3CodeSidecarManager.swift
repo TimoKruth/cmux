@@ -293,49 +293,40 @@ final class T3CodeSidecarManager {
     // MARK: - Server Binary Resolution
 
     /// Find the t3code server binary.
+    ///
+    /// Resolution order (4 stages):
+    /// 1. Environment variables (T3CODE_SERVER_PATH or CMUXTERM_REPO_ROOT)
+    /// 2. Walk up from project directory to find t3code sibling
+    /// 3. Common global install paths (npm, Homebrew)
+    /// 4. App bundle resources (self-contained distribution)
     private func resolveServerBinary() -> String? {
-        // 1. Check T3CODE_SERVER_PATH environment variable (set by install script)
+        let fm = FileManager.default
+
+        // 1. Environment variables (set by install script / LSEnvironment)
         if let t3codePath = ProcessInfo.processInfo.environment["T3CODE_SERVER_PATH"],
-           FileManager.default.fileExists(atPath: t3codePath) {
+           fm.fileExists(atPath: t3codePath) {
             return t3codePath
         }
-
-        // 2. Check CMUXTERM_REPO_ROOT (set in LSEnvironment by install script)
         if let repoRoot = ProcessInfo.processInfo.environment["CMUXTERM_REPO_ROOT"] {
             let candidate = (repoRoot as NSString).appendingPathComponent("t3code/apps/server/dist/index.mjs")
-            if FileManager.default.fileExists(atPath: candidate) {
+            if fm.fileExists(atPath: candidate) {
                 return candidate
             }
         }
 
-        // 3. Check via Xcode source root (Info.plist CMUXSourceRoot key)
-        #if DEBUG
-        if let sourceRoot = Bundle.main.infoDictionary?["CMUXSourceRoot"] as? String {
-            let monorepoRoot = (sourceRoot as NSString).deletingLastPathComponent
-            let candidate = (monorepoRoot as NSString).appendingPathComponent("t3code/apps/server/dist/index.mjs")
-            if FileManager.default.fileExists(atPath: candidate) {
-                return candidate
-            }
-        }
-        #endif
-
-        // 4. Walk up from project directory looking for t3code sibling.
+        // 2. Walk up from project directory looking for t3code sibling.
         // Stop at the project's git root to avoid escaping the repository
-        // and matching an unrelated standalone t3code installation (e.g.,
-        // ~/Projekte/t3code found when the workspace is ~/Projekte/AgentMux).
-        // Note: submodules use a .git *file* (not directory) as a pointer to
-        // the parent's .git/modules — only treat actual .git directories as
-        // repository boundaries.
+        // and matching an unrelated standalone t3code installation.
+        // Submodules use a .git *file* — only real .git directories are boundaries.
         var searchDir = projectDirectory.path
         for _ in 0..<6 {
             let candidate = (searchDir as NSString).appendingPathComponent("t3code/apps/server/dist/index.mjs")
-            if FileManager.default.fileExists(atPath: candidate) {
+            if fm.fileExists(atPath: candidate) {
                 return candidate
             }
-            // Only stop at real git root directories, not submodule .git files.
             let gitMarker = (searchDir as NSString).appendingPathComponent(".git")
             var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: gitMarker, isDirectory: &isDir), isDir.boolValue {
+            if fm.fileExists(atPath: gitMarker, isDirectory: &isDir), isDir.boolValue {
                 break
             }
             let parent = (searchDir as NSString).deletingLastPathComponent
@@ -343,36 +334,21 @@ final class T3CodeSidecarManager {
             searchDir = parent
         }
 
-        // 5. Check well-known development paths
-        #if DEBUG
-        let homeDir = FileManager.default.homeDirectoryForCurrentUser.path
-        let devPaths = [
-            (homeDir as NSString).appendingPathComponent("Projekte/cmux-t3code/t3code/apps/server/dist/index.mjs"),
-            (homeDir as NSString).appendingPathComponent("Projects/cmux-t3code/t3code/apps/server/dist/index.mjs"),
-        ]
-        for path in devPaths {
-            if FileManager.default.fileExists(atPath: path) {
-                return path
-            }
-        }
-        #endif
-
-        // 6. Check common global install paths
+        // 3. Common global install paths
         let globalPaths = [
             "/usr/local/lib/node_modules/t3/dist/index.mjs",
             "/opt/homebrew/lib/node_modules/t3/dist/index.mjs",
         ]
         for path in globalPaths {
-            if FileManager.default.fileExists(atPath: path) {
+            if fm.fileExists(atPath: path) {
                 return path
             }
         }
 
-        // 7. Check app bundle resources (last resort — requires a fully
-        // self-contained bundle with node_modules to actually work)
+        // 4. App bundle resources (last resort)
         if let resourceURL = Bundle.main.resourceURL {
             let bundledPath = resourceURL.appendingPathComponent("t3code-server/index.mjs").path
-            if FileManager.default.fileExists(atPath: bundledPath) {
+            if fm.fileExists(atPath: bundledPath) {
                 return bundledPath
             }
         }
