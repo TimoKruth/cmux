@@ -613,7 +613,8 @@ final class WorkspaceCreationConfigSanitizationTests: XCTestCase {
             portOrdinal: Int,
             configTemplate: ghostty_surface_config_s?,
             initialTerminalCommand: String?,
-            initialTerminalEnvironment: [String: String]
+            initialTerminalEnvironment: [String: String],
+            skipInitialTerminal: Bool = false
         ) -> Workspace {
             capturedConfigTemplate = configTemplate
             return super.makeWorkspaceForCreation(
@@ -622,7 +623,8 @@ final class WorkspaceCreationConfigSanitizationTests: XCTestCase {
                 portOrdinal: portOrdinal,
                 configTemplate: configTemplate,
                 initialTerminalCommand: initialTerminalCommand,
-                initialTerminalEnvironment: initialTerminalEnvironment
+                initialTerminalEnvironment: initialTerminalEnvironment,
+                skipInitialTerminal: skipInitialTerminal
             )
         }
     }
