@@ -2872,6 +2872,7 @@ private struct AboutPanelView: View {
 }
 
 private struct SidebarDebugView: View {
+    @AppStorage("sidebarMatchTerminalBackground") private var matchTerminalBackground = false
     @AppStorage("sidebarPreset") private var sidebarPreset = SidebarPresetOption.nativeSidebar.rawValue
     @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
     @AppStorage("sidebarTintHex") private var sidebarTintHex = SidebarTintDefaults.hex
@@ -2894,6 +2895,7 @@ private struct SidebarDebugView: View {
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SidebarActiveTabIndicatorSettings.styleKey)
     private var sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
+    @AppStorage("sidebarSelectionColorHex") private var sidebarSelectionColorHex: String?
 
     private var selectedSidebarIndicatorStyle: SidebarActiveTabIndicatorStyle {
         SidebarActiveTabIndicatorSettings.resolvedStyle(rawValue: sidebarActiveTabIndicatorStyle)
@@ -2906,11 +2908,28 @@ private struct SidebarDebugView: View {
         )
     }
 
+    private var selectionColorBinding: Binding<Color> {
+        Binding(
+            get: {
+                if let hex = sidebarSelectionColorHex, let nsColor = NSColor(hex: hex) {
+                    return Color(nsColor: nsColor)
+                }
+                return cmuxAccentColor()
+            },
+            set: { newColor in
+                let nsColor = NSColor(newColor)
+                sidebarSelectionColorHex = nsColor.hexString()
+            }
+        )
+    }
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 Text("Sidebar Appearance")
                     .font(.headline)
+
+                Toggle(String(localized: "settings.sidebarAppearance.matchTerminalBackground", defaultValue: "Match Terminal Background"), isOn: $matchTerminalBackground)
 
                 GroupBox("Presets") {
                     Picker("Preset", selection: $sidebarPreset) {
@@ -3013,6 +3032,15 @@ private struct SidebarDebugView: View {
                                 Text(style.displayName).tag(style.rawValue)
                             }
                         }
+
+                        ColorPicker(String(localized: "sidebar.debug.selectionColor", defaultValue: "Selection Color"), selection: selectionColorBinding, supportsOpacity: false)
+
+                        if sidebarSelectionColorHex != nil {
+                            Button(String(localized: "sidebar.debug.resetSelectionColor", defaultValue: "Reset to Default")) {
+                                sidebarSelectionColorHex = nil
+                            }
+                            .font(.caption)
+                        }
                     }
                     .padding(.top, 2)
                 }
@@ -3048,6 +3076,7 @@ private struct SidebarDebugView: View {
                     }
                     Button("Reset Active Indicator") {
                         sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
+                        sidebarSelectionColorHex = nil
                     }
                 }
 
@@ -3866,6 +3895,8 @@ struct SettingsView: View {
     @AppStorage(SidebarBranchLayoutSettings.key) private var sidebarBranchVerticalLayout = SidebarBranchLayoutSettings.defaultVerticalLayout
     @AppStorage(SidebarActiveTabIndicatorSettings.styleKey)
     private var sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
+    @AppStorage("sidebarSelectionColorHex") private var sidebarSelectionColorHex: String?
+    @AppStorage("sidebarNotificationBadgeColorHex") private var sidebarNotificationBadgeColorHex: String?
     @AppStorage("sidebarShowBranchDirectory") private var sidebarShowBranchDirectory = true
     @AppStorage("sidebarShowPullRequest") private var sidebarShowPullRequest = true
     @AppStorage(BrowserLinkOpenSettings.openSidebarPullRequestLinksInCmuxBrowserKey)
@@ -3883,6 +3914,7 @@ struct SettingsView: View {
     @AppStorage("sidebarTintHexLight") private var sidebarTintHexLight: String?
     @AppStorage("sidebarTintHexDark") private var sidebarTintHexDark: String?
     @AppStorage("sidebarTintOpacity") private var sidebarTintOpacity = SidebarTintDefaults.opacity
+    @AppStorage("sidebarMatchTerminalBackground") private var sidebarMatchTerminalBackground = false
 
     @ObservedObject private var notificationStore = TerminalNotificationStore.shared
     @State private var shortcutResetToken = UUID()
@@ -3975,6 +4007,36 @@ struct SettingsView: View {
         Binding(
             get: { selectedSidebarActiveTabIndicatorStyle.rawValue },
             set: { sidebarActiveTabIndicatorStyle = $0 }
+        )
+    }
+
+    private var selectionColorBinding: Binding<Color> {
+        Binding(
+            get: {
+                if let hex = sidebarSelectionColorHex, let nsColor = NSColor(hex: hex) {
+                    return Color(nsColor: nsColor)
+                }
+                return cmuxAccentColor()
+            },
+            set: { newColor in
+                let nsColor = NSColor(newColor)
+                sidebarSelectionColorHex = nsColor.hexString()
+            }
+        )
+    }
+
+    private var notificationBadgeColorBinding: Binding<Color> {
+        Binding(
+            get: {
+                if let hex = sidebarNotificationBadgeColorHex, let nsColor = NSColor(hex: hex) {
+                    return Color(nsColor: nsColor)
+                }
+                return cmuxAccentColor()
+            },
+            set: { newColor in
+                let nsColor = NSColor(newColor)
+                sidebarNotificationBadgeColorHex = nsColor.hexString()
+            }
         )
     }
 
@@ -4845,6 +4907,66 @@ struct SettingsView: View {
 
                         SettingsCardDivider()
 
+                        SettingsCardRow(
+                            String(localized: "settings.workspaceColors.selectionColor", defaultValue: "Selection Highlight"),
+                            subtitle: String(localized: "settings.workspaceColors.selectionColor.subtitle", defaultValue: "Background color of the selected workspace in the sidebar.")
+                        ) {
+                            HStack(spacing: 8) {
+                                if sidebarSelectionColorHex != nil {
+                                    Button(String(localized: "settings.workspaceColors.selectionColor.reset", defaultValue: "Reset")) {
+                                        sidebarSelectionColorHex = nil
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+
+                                ColorPicker(
+                                    "",
+                                    selection: selectionColorBinding,
+                                    supportsOpacity: false
+                                )
+                                .labelsHidden()
+                                .frame(width: 38)
+
+                                Text(sidebarSelectionColorHex ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 76, alignment: .trailing)
+                            }
+                        }
+
+                        SettingsCardDivider()
+
+                        SettingsCardRow(
+                            String(localized: "settings.workspaceColors.notificationBadgeColor", defaultValue: "Notification Badge"),
+                            subtitle: String(localized: "settings.workspaceColors.notificationBadgeColor.subtitle", defaultValue: "Color of the unread notification badge on workspace tabs.")
+                        ) {
+                            HStack(spacing: 8) {
+                                if sidebarNotificationBadgeColorHex != nil {
+                                    Button(String(localized: "settings.workspaceColors.notificationBadgeColor.reset", defaultValue: "Reset")) {
+                                        sidebarNotificationBadgeColorHex = nil
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .controlSize(.small)
+                                }
+
+                                ColorPicker(
+                                    "",
+                                    selection: notificationBadgeColorBinding,
+                                    supportsOpacity: false
+                                )
+                                .labelsHidden()
+                                .frame(width: 38)
+
+                                Text(sidebarNotificationBadgeColorHex ?? String(localized: "settings.sidebarAppearance.defaultLabel", defaultValue: "Default"))
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .frame(width: 76, alignment: .trailing)
+                            }
+                        }
+
+                        SettingsCardDivider()
+
                         SettingsCardNote(String(localized: "settings.workspaceColors.paletteNote", defaultValue: "Customize the workspace color palette used by Sidebar > Workspace Color. \"Choose Custom Color...\" entries are persisted below."))
 
                         ForEach(Array(workspaceTabDefaultEntries.enumerated()), id: \.element.name) { index, entry in
@@ -4921,6 +5043,18 @@ struct SettingsView: View {
 
                     SettingsSectionHeader(title: String(localized: "settings.section.sidebarAppearance", defaultValue: "Sidebar Appearance"))
                     SettingsCard {
+                        SettingsCardRow(
+                            String(localized: "settings.sidebarAppearance.matchTerminalBackground", defaultValue: "Match Terminal Background"),
+                            subtitle: String(localized: "settings.sidebarAppearance.matchTerminalBackground.subtitle", defaultValue: "Use the same background color and transparency as the terminal.")
+                        ) {
+                            Toggle("", isOn: $sidebarMatchTerminalBackground)
+                                .labelsHidden()
+                                .toggleStyle(.switch)
+                                .controlSize(.small)
+                        }
+
+                        SettingsCardDivider()
+
                         SettingsCardRow(
                             String(localized: "settings.sidebarAppearance.tintColorLight", defaultValue: "Light Mode Tint"),
                             subtitle: String(localized: "settings.sidebarAppearance.tintColorLight.subtitle", defaultValue: "Sidebar tint color when using light appearance.")
@@ -5669,6 +5803,8 @@ struct SettingsView: View {
         sidebarShowNotificationMessage = SidebarWorkspaceDetailSettings.defaultShowNotificationMessage
         sidebarBranchVerticalLayout = SidebarBranchLayoutSettings.defaultVerticalLayout
         sidebarActiveTabIndicatorStyle = SidebarActiveTabIndicatorSettings.defaultStyle.rawValue
+        sidebarSelectionColorHex = nil
+        sidebarNotificationBadgeColorHex = nil
         sidebarShowBranchDirectory = true
         sidebarShowPullRequest = true
         openSidebarPullRequestLinksInCmuxBrowser = BrowserLinkOpenSettings.defaultOpenSidebarPullRequestLinksInCmuxBrowser
@@ -5683,6 +5819,7 @@ struct SettingsView: View {
         sidebarTintHexLight = nil
         sidebarTintHexDark = nil
         sidebarTintOpacity = SidebarTintDefaults.opacity
+        sidebarMatchTerminalBackground = false
         showOpenAccessConfirmation = false
         pendingOpenAccessMode = nil
         socketPasswordDraft = ""
