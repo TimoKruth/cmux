@@ -112,7 +112,7 @@ func cmuxInheritedSurfaceConfig(
     return config
 }
 
-struct SidebarStatusEntry {
+struct SidebarStatusEntry: Equatable {
     let key: String
     let value: String
     let icon: String?
@@ -143,7 +143,7 @@ struct SidebarStatusEntry {
     }
 }
 
-struct SidebarMetadataBlock {
+struct SidebarMetadataBlock: Equatable {
     let key: String
     let markdown: String
     let priority: Int
@@ -2603,6 +2603,7 @@ private final class WorkspaceRemoteProxyBroker {
         var tunnel: WorkspaceRemoteDaemonProxyTunnel?
         var endpoint: BrowserProxyEndpoint?
         var restartWorkItem: DispatchWorkItem?
+        var restartRetryCount = 0
         var subscribers: [UUID: (Update) -> Void] = [:]
 
         init(configuration: WorkspaceRemoteConfiguration, remotePath: String) {
@@ -2629,6 +2630,7 @@ private final class WorkspaceRemoteProxyBroker {
                 entry = existing
                 if existing.remotePath != remotePath {
                     existing.remotePath = remotePath
+                    existing.restartRetryCount = 0
                     if existing.tunnel != nil {
                         stopEntryRuntimeLocked(existing)
                         notifyLocked(existing, update: .connecting)
@@ -2672,12 +2674,13 @@ private final class WorkspaceRemoteProxyBroker {
             // Internal deterministic test hook used by docker regressions to force bind conflicts.
             localPort = forcedLocalPort
         } else {
+            let retryDelay = Self.retryDelay(baseDelay: 3.0, retry: entry.restartRetryCount + 1)
             guard let allocatedPort = Self.allocateLoopbackPort() else {
                 notifyLocked(
                     entry,
-                    update: .error("Failed to allocate local proxy port\(Self.retrySuffix(delay: 3.0))")
+                    update: .error("Failed to allocate local proxy port\(Self.retrySuffix(delay: retryDelay))")
                 )
-                scheduleRestartLocked(key: key, entry: entry, delay: 3.0)
+                scheduleRestartLocked(key: key, entry: entry, baseDelay: 3.0)
                 return
             }
             localPort = allocatedPort
@@ -2697,28 +2700,33 @@ private final class WorkspaceRemoteProxyBroker {
             entry.tunnel = tunnel
             let endpoint = BrowserProxyEndpoint(host: "127.0.0.1", port: localPort)
             entry.endpoint = endpoint
+            entry.restartRetryCount = 0
             notifyLocked(entry, update: .ready(endpoint))
         } catch {
             stopEntryRuntimeLocked(entry)
             let detail = "Failed to start local daemon proxy: \(error.localizedDescription)"
-            notifyLocked(entry, update: .error("\(detail)\(Self.retrySuffix(delay: 3.0))"))
-            scheduleRestartLocked(key: key, entry: entry, delay: 3.0)
+            let retryDelay = Self.retryDelay(baseDelay: 3.0, retry: entry.restartRetryCount + 1)
+            notifyLocked(entry, update: .error("\(detail)\(Self.retrySuffix(delay: retryDelay))"))
+            scheduleRestartLocked(key: key, entry: entry, baseDelay: 3.0)
         }
     }
 
     private func handleTunnelFailureLocked(key: String, detail: String) {
         guard let entry = entries[key], entry.tunnel != nil else { return }
         stopEntryRuntimeLocked(entry)
-        notifyLocked(entry, update: .error("\(detail)\(Self.retrySuffix(delay: 3.0))"))
-        scheduleRestartLocked(key: key, entry: entry, delay: 3.0)
+        let retryDelay = Self.retryDelay(baseDelay: 3.0, retry: entry.restartRetryCount + 1)
+        notifyLocked(entry, update: .error("\(detail)\(Self.retrySuffix(delay: retryDelay))"))
+        scheduleRestartLocked(key: key, entry: entry, baseDelay: 3.0)
     }
 
-    private func scheduleRestartLocked(key: String, entry: Entry, delay: TimeInterval) {
+    private func scheduleRestartLocked(key: String, entry: Entry, baseDelay: TimeInterval) {
         guard !entry.subscribers.isEmpty else {
             teardownEntryLocked(key: key, entry: entry)
             return
         }
         guard entry.restartWorkItem == nil else { return }
+        entry.restartRetryCount += 1
+        let retryDelay = Self.retryDelay(baseDelay: baseDelay, retry: entry.restartRetryCount)
 
         let workItem = DispatchWorkItem { [weak self] in
             guard let self, let currentEntry = self.entries[key] else { return }
@@ -2732,7 +2740,7 @@ private final class WorkspaceRemoteProxyBroker {
         }
 
         entry.restartWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
+        queue.asyncAfter(deadline: .now() + retryDelay, execute: workItem)
     }
 
     private func teardownEntryLocked(key: String, entry: Entry) {
@@ -2800,6 +2808,11 @@ private final class WorkspaceRemoteProxyBroker {
     private static func retrySuffix(delay: TimeInterval) -> String {
         let seconds = max(1, Int(delay.rounded()))
         return " (retry in \(seconds)s)"
+    }
+
+    private static func retryDelay(baseDelay: TimeInterval, retry: Int) -> TimeInterval {
+        let exponent = Double(max(0, retry - 1))
+        return min(baseDelay * pow(2.0, exponent), 60.0)
     }
 }
 
@@ -3284,6 +3297,11 @@ private final class WorkspaceRemoteCLIRelayServer {
 }
 
 final class WorkspaceRemoteSessionController {
+    private struct RetrySchedule {
+        let retry: Int
+        let delay: TimeInterval
+    }
+
     private struct CommandResult {
         let status: Int32
         let stdout: String
@@ -3471,8 +3489,8 @@ final class WorkspaceRemoteSessionController {
             daemonReady = false
             daemonBootstrapVersion = nil
             daemonRemotePath = nil
-            let nextRetry = scheduleReconnectLocked(delay: 4.0)
-            let retrySuffix = Self.retrySuffix(retry: nextRetry, delay: 4.0)
+            let retrySchedule = scheduleReconnectLocked(baseDelay: 4.0)
+            let retrySuffix = Self.retrySuffix(retry: retrySchedule.retry, delay: retrySchedule.delay)
             let detail = "Remote daemon bootstrap failed: \(error.localizedDescription)\(retrySuffix)"
             publishDaemonStatus(.error, detail: detail)
             publishState(.error, detail: detail)
@@ -3485,8 +3503,8 @@ final class WorkspaceRemoteSessionController {
         guard proxyLease == nil else { return }
         guard let remotePath = daemonRemotePath,
               !remotePath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            let nextRetry = scheduleReconnectLocked(delay: 4.0)
-            let retrySuffix = Self.retrySuffix(retry: nextRetry, delay: 4.0)
+            let retrySchedule = scheduleReconnectLocked(baseDelay: 4.0)
+            let retrySuffix = Self.retrySuffix(retry: retrySchedule.retry, delay: retrySchedule.delay)
             let detail = "Remote daemon did not provide a valid remote path\(retrySuffix)"
             publishDaemonStatus(.error, detail: detail)
             publishState(.error, detail: detail)
@@ -3702,8 +3720,8 @@ final class WorkspaceRemoteSessionController {
             daemonBootstrapVersion = nil
             daemonRemotePath = nil
 
-            let nextRetry = scheduleReconnectLocked(delay: 2.0)
-            let retrySuffix = Self.retrySuffix(retry: nextRetry, delay: 2.0)
+            let retrySchedule = scheduleReconnectLocked(baseDelay: 2.0)
+            let retrySuffix = Self.retrySuffix(retry: retrySchedule.retry, delay: retrySchedule.delay)
             publishDaemonStatus(
                 .error,
                 detail: "Remote daemon transport needs re-bootstrap after proxy failure\(retrySuffix)"
@@ -3712,11 +3730,12 @@ final class WorkspaceRemoteSessionController {
     }
 
     @discardableResult
-    private func scheduleReconnectLocked(delay: TimeInterval) -> Int {
-        guard !isStopping else { return reconnectRetryCount }
+    private func scheduleReconnectLocked(baseDelay: TimeInterval) -> RetrySchedule {
+        let retryNumber = reconnectRetryCount + 1
+        let retryDelay = Self.retryDelay(baseDelay: baseDelay, retry: retryNumber)
+        guard !isStopping else { return RetrySchedule(retry: retryNumber, delay: retryDelay) }
         reconnectWorkItem?.cancel()
-        reconnectRetryCount += 1
-        let retryNumber = reconnectRetryCount
+        reconnectRetryCount = retryNumber
         let workItem = DispatchWorkItem { [weak self] in
             guard let self else { return }
             self.reconnectWorkItem = nil
@@ -3725,8 +3744,8 @@ final class WorkspaceRemoteSessionController {
             self.beginConnectionAttemptLocked()
         }
         reconnectWorkItem = workItem
-        queue.asyncAfter(deadline: .now() + delay, execute: workItem)
-        return retryNumber
+        queue.asyncAfter(deadline: .now() + retryDelay, execute: workItem)
+        return RetrySchedule(retry: retryNumber, delay: retryDelay)
     }
 
     private func publishState(_ state: WorkspaceRemoteConnectionState, detail: String?) {
@@ -4967,6 +4986,11 @@ final class WorkspaceRemoteSessionController {
         return " (retry \(retry) in \(seconds)s)"
     }
 
+    private static func retryDelay(baseDelay: TimeInterval, retry: Int) -> TimeInterval {
+        let exponent = Double(max(0, retry - 1))
+        return min(baseDelay * pow(2.0, exponent), 60.0)
+    }
+
     private static func shouldEscalateProxyErrorToBootstrap(_ detail: String) -> Bool {
         let lowered = detail.lowercased()
         return lowered.contains("remote daemon transport failed")
@@ -4986,21 +5010,29 @@ enum SidebarLogLevel: String {
     case error
 }
 
-struct SidebarLogEntry {
+struct SidebarLogEntry: Equatable {
     let message: String
     let level: SidebarLogLevel
     let source: String?
     let timestamp: Date
 }
 
-struct SidebarProgressState {
+struct SidebarProgressState: Equatable {
     let value: Double
     let label: String?
 }
 
-struct SidebarGitBranchState {
+struct SidebarGitBranchState: Equatable {
     let branch: String
     let isDirty: Bool
+}
+
+private struct SidebarPanelObservationState: Equatable {
+    let panelIds: [UUID]
+
+    init(panels: [UUID: any Panel]) {
+        panelIds = panels.keys.sorted { $0.uuidString < $1.uuidString }
+    }
 }
 
 enum WorkspaceRemoteConnectionState: String {
@@ -5659,6 +5691,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     private static let remoteErrorStatusKey = "remote.error"
     private static let remotePortConflictStatusKey = "remote.port_conflicts"
+    private static let remoteNotificationCooldown: TimeInterval = 5 * 60
     private static let sshControlMasterCleanupQueue = DispatchQueue(
         label: "com.cmux.remote-ssh.control-master-cleanup",
         qos: .utility
@@ -5686,6 +5719,55 @@ final class Workspace: Identifiable, ObservableObject {
     /// Whether the writer list is expanded in the sidebar.
     @Published var isWritersExpanded: Bool = true
 
+    private func sidebarObservationSignal<Value: Equatable>(
+        _ publisher: Published<Value>.Publisher
+    ) -> AnyPublisher<Void, Never> {
+        publisher
+            .dropFirst()
+            .removeDuplicates()
+            .map { _ in () }
+            .eraseToAnyPublisher()
+    }
+
+    lazy var sidebarObservationPublisher: AnyPublisher<Void, Never> = {
+        let publishers: [AnyPublisher<Void, Never>] = [
+            sidebarObservationSignal($title),
+            sidebarObservationSignal($isPinned),
+            sidebarObservationSignal($customColor),
+            sidebarObservationSignal($currentDirectory),
+            $panels
+                .map(SidebarPanelObservationState.init)
+                .dropFirst()
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            sidebarObservationSignal($panelDirectories),
+            sidebarObservationSignal($statusEntries),
+            sidebarObservationSignal($metadataBlocks),
+            sidebarObservationSignal($logEntries),
+            sidebarObservationSignal($progress),
+            sidebarObservationSignal($gitBranch),
+            sidebarObservationSignal($panelGitBranches),
+            sidebarObservationSignal($pullRequest),
+            sidebarObservationSignal($panelPullRequests),
+            $writers
+                .map { $0.map(\.id) }
+                .dropFirst()
+                .removeDuplicates()
+                .map { _ in () }
+                .eraseToAnyPublisher(),
+            sidebarObservationSignal($activeWriterId),
+            sidebarObservationSignal($isWritersExpanded),
+            sidebarObservationSignal($remoteConfiguration),
+            sidebarObservationSignal($remoteConnectionState),
+            sidebarObservationSignal($remoteConnectionDetail),
+            sidebarObservationSignal($activeRemoteTerminalSessionCount),
+            sidebarObservationSignal($listeningPorts),
+        ]
+
+        return Publishers.MergeMany(publishers).eraseToAnyPublisher()
+    }()
+
     private static func isProxyOnlyRemoteError(_ detail: String) -> Bool {
         let lowered = detail.lowercased()
         return lowered.contains("remote proxy")
@@ -5703,6 +5785,20 @@ final class Workspace: Identifiable, ObservableObject {
     private var hasProxyOnlyRemoteSidebarError: Bool {
         guard let entry = statusEntries[Self.remoteErrorStatusKey]?.value else { return false }
         return entry.lowercased().contains("remote proxy unavailable")
+    }
+
+    private func remoteNotificationCooldownKey(target: String) -> String? {
+        let rawTarget = (remoteConfiguration?.destination ?? target)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawTarget.isEmpty else { return nil }
+        let normalizedHost = rawTarget
+            .split(separator: "@", maxSplits: 1, omittingEmptySubsequences: false)
+            .last
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard let normalizedHost, !normalizedHost.isEmpty else { return nil }
+        return "remote-host:\(normalizedHost)"
     }
 
     var focusedSurfaceId: UUID? { focusedPanelId }
@@ -6557,22 +6653,32 @@ final class Workspace: Identifiable, ObservableObject {
             panelGitBranches[panelId] = state
         }
         if branchChanged {
-            panelPullRequests.removeValue(forKey: panelId)
-            if panelId == focusedPanelId {
+            if panelPullRequests[panelId] != nil {
+                panelPullRequests.removeValue(forKey: panelId)
+            }
+            if panelId == focusedPanelId, pullRequest != nil {
                 pullRequest = nil
             }
         }
-        if panelId == focusedPanelId {
+        if panelId == focusedPanelId, gitBranch != state {
             gitBranch = state
         }
     }
 
     func clearPanelGitBranch(panelId: UUID) {
-        panelGitBranches.removeValue(forKey: panelId)
-        panelPullRequests.removeValue(forKey: panelId)
+        if panelGitBranches[panelId] != nil {
+            panelGitBranches.removeValue(forKey: panelId)
+        }
+        if panelPullRequests[panelId] != nil {
+            panelPullRequests.removeValue(forKey: panelId)
+        }
         if panelId == focusedPanelId {
-            gitBranch = nil
-            pullRequest = nil
+            if gitBranch != nil {
+                gitBranch = nil
+            }
+            if pullRequest != nil {
+                pullRequest = nil
+            }
         }
     }
 
@@ -6628,14 +6734,16 @@ final class Workspace: Identifiable, ObservableObject {
         if existing != state {
             panelPullRequests[panelId] = state
         }
-        if panelId == focusedPanelId {
+        if panelId == focusedPanelId, pullRequest != state {
             pullRequest = state
         }
     }
 
     func clearPanelPullRequest(panelId: UUID) {
-        panelPullRequests.removeValue(forKey: panelId)
-        if panelId == focusedPanelId {
+        if panelPullRequests[panelId] != nil {
+            panelPullRequests.removeValue(forKey: panelId)
+        }
+        if panelId == focusedPanelId, pullRequest != nil {
             pullRequest = nil
         }
     }
@@ -7312,13 +7420,15 @@ final class Workspace: Identifiable, ObservableObject {
                     surfaceId: nil,
                     title: notificationTitle,
                     subtitle: target,
-                    body: trimmedDetail
+                    body: trimmedDetail,
+                    cooldownKey: remoteNotificationCooldownKey(target: target),
+                    cooldownInterval: Self.remoteNotificationCooldown
                 )
             }
             return
         }
 
-        if !preserveConnectedStateForRetry && state != .error {
+        if state == .connected {
             statusEntries.removeValue(forKey: Self.remoteErrorStatusKey)
             remoteLastErrorFingerprint = nil
         }
@@ -9790,15 +9900,15 @@ final class Workspace: Identifiable, ObservableObject {
               let panel = panels[panelId] else { return }
 
         let alert = NSAlert()
-        alert.messageText = "Rename Tab"
-        alert.informativeText = "Enter a custom name for this tab."
+        alert.messageText = String(localized: "alert.renameTab.title", defaultValue: "Rename Tab")
+        alert.informativeText = String(localized: "alert.renameTab.message", defaultValue: "Enter a custom name for this tab.")
         let currentTitle = panelCustomTitles[panelId] ?? panelTitles[panelId] ?? panel.displayTitle
         let input = NSTextField(string: currentTitle)
-        input.placeholderString = "Tab name"
+        input.placeholderString = String(localized: "alert.renameTab.placeholder", defaultValue: "Tab name")
         input.frame = NSRect(x: 0, y: 0, width: 240, height: 22)
         alert.accessoryView = input
-        alert.addButton(withTitle: "Rename")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: String(localized: "alert.renameTab.rename", defaultValue: "Rename"))
+        alert.addButton(withTitle: String(localized: "alert.cancel", defaultValue: "Cancel"))
         let alertWindow = alert.window
         alertWindow.initialFirstResponder = input
         DispatchQueue.main.async {
@@ -9827,24 +9937,24 @@ final class Workspace: Identifiable, ObservableObject {
         )
 
         var options: [(title: String, destination: PanelMoveDestination)] = [
-            ("New Workspace in Current Window", .newWorkspaceInCurrentWindow),
-            ("Selected Workspace in New Window", .selectedWorkspaceInNewWindow),
+            (String(localized: "alert.moveTab.newWorkspaceInCurrentWindow", defaultValue: "New Workspace in Current Window"), .newWorkspaceInCurrentWindow),
+            (String(localized: "alert.moveTab.selectedWorkspaceInNewWindow", defaultValue: "Selected Workspace in New Window"), .selectedWorkspaceInNewWindow),
         ]
         options.append(contentsOf: workspaceTargets.map { target in
             (target.label, .existingWorkspace(target.workspaceId))
         })
 
         let alert = NSAlert()
-        alert.messageText = "Move Tab"
-        alert.informativeText = "Choose a destination for this tab."
+        alert.messageText = String(localized: "alert.moveTab.title", defaultValue: "Move Tab")
+        alert.informativeText = String(localized: "alert.moveTab.message", defaultValue: "Choose a destination for this tab.")
         let popup = NSPopUpButton(frame: NSRect(x: 0, y: 0, width: 320, height: 26), pullsDown: false)
         for option in options {
             popup.addItem(withTitle: option.title)
         }
         popup.selectItem(at: 0)
         alert.accessoryView = popup
-        alert.addButton(withTitle: "Move")
-        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: String(localized: "alert.moveTab.move", defaultValue: "Move"))
+        alert.addButton(withTitle: String(localized: "alert.cancel", defaultValue: "Cancel"))
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         let selectedIndex = max(0, min(popup.indexOfSelectedItem, options.count - 1))
@@ -9890,9 +10000,9 @@ final class Workspace: Identifiable, ObservableObject {
         if !moved {
             let failure = NSAlert()
             failure.alertStyle = .warning
-            failure.messageText = "Move Failed"
-            failure.informativeText = "cmux could not move this tab to the selected destination."
-            failure.addButton(withTitle: "OK")
+            failure.messageText = String(localized: "alert.moveTab.failed.title", defaultValue: "Move Failed")
+            failure.informativeText = String(localized: "alert.moveTab.failed.message", defaultValue: "cmux could not move this tab to the selected destination.")
+            failure.addButton(withTitle: String(localized: "alert.ok", defaultValue: "OK"))
             _ = failure.runModal()
         }
     }
