@@ -26,7 +26,7 @@ cd "$REPO_ROOT"
 
 # --- Build t3code server (Node.js sidecar) ---
 T3CODE_DIR="${SUPERPROJECT_ROOT}/t3code"
-T3CODE_DIST="${T3CODE_DIR}/apps/server/dist/index.mjs"
+T3CODE_DIST="${T3CODE_DIR}/apps/server/dist/bin.mjs"
 if [ -d "$T3CODE_DIR" ]; then
   echo "▸ Building t3code server..."
   if command -v bun >/dev/null 2>&1; then
@@ -81,7 +81,7 @@ sleep 0.3
 pkill -f "${APP_NAME}.app/Contents/MacOS/cmux" 2>/dev/null || true
 sleep 0.3
 # Kill orphaned t3code sidecar processes from the previous installation
-pkill -f "node.*t3code.*index.mjs" 2>/dev/null || true
+pkill -f "node.*t3code.*(index|bin)\.mjs" 2>/dev/null || true
 sleep 0.2
 
 INSTALL_PATH="${INSTALL_DIR}/${APP_NAME}.app"
@@ -89,6 +89,19 @@ echo "▸ Installing to ${INSTALL_PATH}..."
 [[ -d "$INSTALL_PATH" ]] && rm -rf "$INSTALL_PATH"
 cp -R "$BUILT_APP" "$INSTALL_PATH"
 
+# --- Bundle binaries into app ---
+BIN_DIR="$INSTALL_PATH/Contents/Resources/bin"
+mkdir -p "$BIN_DIR"
+[[ -x "$CMUXD_SRC" ]] && cp "$CMUXD_SRC" "$BIN_DIR/cmuxd" && chmod +x "$BIN_DIR/cmuxd" && echo "▸ Bundled cmuxd"
+[[ -x "$GHOSTTY_HELPER_SRC" ]] && cp "$GHOSTTY_HELPER_SRC" "$BIN_DIR/ghostty" && chmod +x "$BIN_DIR/ghostty" && echo "▸ Bundled ghostty"
+
+# Point T3CODE_SERVER_PATH to the source tree dist — the server uses bare ESM
+# imports (e.g. "effect", "@effect/platform-node") that require node_modules in
+# the ancestor directory chain.  A fully self-contained app bundle would need
+# the tsdown config changed to inline all dependencies.
+T3CODE_SERVER_PLIST_PATH="$T3CODE_DIST"
+
+# --- Patch Info.plist ---
 INFO_PLIST="$INSTALL_PATH/Contents/Info.plist"
 echo "▸ Patching Info.plist..."
 /usr/libexec/PlistBuddy -c "Set :CFBundleName ${APP_NAME}" "$INFO_PLIST" 2>/dev/null \
@@ -106,16 +119,11 @@ for kv in \
   "CMUX_SOCKET_MODE:automation" \
   "CMUX_REMOTE_DAEMON_ALLOW_LOCAL_BUILD:1" \
   "CMUXTERM_REPO_ROOT:${SUPERPROJECT_ROOT}" \
-  "T3CODE_SERVER_PATH:${T3CODE_DIST}"; do
+  "T3CODE_SERVER_PATH:${T3CODE_SERVER_PLIST_PATH}"; do
   KEY="${kv%%:*}"; VAL="${kv#*:}"
   /usr/libexec/PlistBuddy -c "Set :LSEnvironment:${KEY} \"${VAL}\"" "$INFO_PLIST" 2>/dev/null \
     || /usr/libexec/PlistBuddy -c "Add :LSEnvironment:${KEY} string \"${VAL}\"" "$INFO_PLIST"
 done
-
-BIN_DIR="$INSTALL_PATH/Contents/Resources/bin"
-mkdir -p "$BIN_DIR"
-[[ -x "$CMUXD_SRC" ]] && cp "$CMUXD_SRC" "$BIN_DIR/cmuxd" && chmod +x "$BIN_DIR/cmuxd" && echo "▸ Bundled cmuxd"
-[[ -x "$GHOSTTY_HELPER_SRC" ]] && cp "$GHOSTTY_HELPER_SRC" "$BIN_DIR/ghostty" && chmod +x "$BIN_DIR/ghostty" && echo "▸ Bundled ghostty"
 
 echo "▸ Re-codesigning..."
 /usr/bin/codesign --force --deep --sign - --timestamp=none --generate-entitlement-der "$INSTALL_PATH" >/dev/null 2>&1 || { echo "warning: code signing failed — app may not launch correctly" >&2; }

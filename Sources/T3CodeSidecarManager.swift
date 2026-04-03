@@ -15,7 +15,7 @@ final class T3CodeSidecarManager {
     /// The workspace's project directory (used as cwd and state-dir base).
     let projectDirectory: URL
 
-    /// The .cmux home directory for this workspace (passed as --home-dir to t3code).
+    /// The .cmux home directory for this workspace (passed as --base-dir to t3code).
     private var homeDir: String { projectDirectory.appendingPathComponent(".cmux").path }
 
     /// The t3code "userdata" state directory (derived by the server as {homeDir}/userdata).
@@ -92,7 +92,7 @@ final class T3CodeSidecarManager {
             "node",
             serverBinary,
             "--port", String(selectedPort),
-            "--home-dir", homeDir,
+            "--base-dir", homeDir,
             "--auto-bootstrap-project-from-cwd",
             "--no-browser",
             "--mode", "web"
@@ -196,9 +196,15 @@ final class T3CodeSidecarManager {
 
     // MARK: - Port File Polling
 
-    /// Poll the state directory for a server.port file written by t3code.
+    /// Poll the HTTP endpoint until the t3code server is ready.
+    /// Falls back to reading a server.port file for older server versions.
     private func startPortPolling() {
         stopPortPolling()
+
+        guard let selectedPort = port else {
+            logger.error("No port assigned — cannot poll for readiness")
+            return
+        }
 
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + 1, repeating: 1.0)
@@ -210,7 +216,28 @@ final class T3CodeSidecarManager {
             guard let self = self else { return }
             attempts += 1
 
-            // Check for port file written by t3code server on startup
+            // Probe the HTTP endpoint — the server responds once it is ready.
+            let url = URL(string: "http://127.0.0.1:\(selectedPort)/")!
+            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 2)
+            request.httpMethod = "HEAD"
+            let semaphore = DispatchSemaphore(value: 0)
+            var reachable = false
+            let task = URLSession.shared.dataTask(with: request) { _, response, _ in
+                if let http = response as? HTTPURLResponse, http.statusCode == 200 {
+                    reachable = true
+                }
+                semaphore.signal()
+            }
+            task.resume()
+            semaphore.wait()
+
+            if reachable {
+                self.logger.info("t3code server ready on port \(selectedPort)")
+                self.handlePortDetected(selectedPort)
+                return
+            }
+
+            // Fallback: check for port file (older server versions)
             if let portStr = try? String(contentsOfFile: self.portFilePath, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
                let port = Int(portStr), port > 0 {
                 self.logger.info("Detected t3code port \(port) from port file at \(self.portFilePath)")
@@ -220,13 +247,13 @@ final class T3CodeSidecarManager {
 
             // Check if process is still alive
             if let proc = self.process, !proc.isRunning {
-                self.logger.error("t3code process died while waiting for port file")
+                self.logger.error("t3code process died while waiting for readiness")
                 self.stopPortPolling()
                 return
             }
 
             if attempts >= maxAttempts {
-                self.logger.error("Timed out waiting for t3code port file after \(maxAttempts)s at \(self.portFilePath)")
+                self.logger.error("Timed out waiting for t3code readiness after \(maxAttempts)s on port \(selectedPort)")
                 self.stopPortPolling()
             }
         }
