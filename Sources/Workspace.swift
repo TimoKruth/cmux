@@ -8,6 +8,21 @@ import Darwin
 import Network
 import CoreText
 
+#if DEBUG
+private func debugWorkspaceDescriptionPreview(_ text: String?, limit: Int = 120) -> String {
+    guard let text else { return "nil" }
+    let escaped = text
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\n", with: "\\n")
+        .replacingOccurrences(of: "\r", with: "\\r")
+        .replacingOccurrences(of: "\t", with: "\\t")
+    if escaped.count <= limit {
+        return escaped
+    }
+    return "\(escaped.prefix(limit))..."
+}
+#endif
+
 struct CmuxSurfaceConfigTemplate {
     var fontSize: Float32 = 0
     var workingDirectory: String?
@@ -295,6 +310,7 @@ extension Workspace {
             id: id,
             processTitle: processTitle,
             customTitle: customTitle,
+            customDescription: customDescription,
             customColor: customColor,
             isPinned: isPinned,
             currentDirectory: currentDirectory,
@@ -349,6 +365,7 @@ extension Workspace {
 
         applyProcessTitle(snapshot.processTitle)
         setCustomTitle(snapshot.customTitle)
+        setCustomDescription(snapshot.customDescription)
         setCustomColor(snapshot.customColor)
         isPinned = snapshot.isPinned
 
@@ -5578,6 +5595,7 @@ final class Workspace: Identifiable, ObservableObject {
     let id: UUID
     @Published var title: String
     @Published var customTitle: String?
+    @Published var customDescription: String?
     @Published var isPinned: Bool = false
     @Published var customColor: String?  // hex string, e.g. "#C0392B"
     @Published var currentDirectory: String
@@ -5729,11 +5747,19 @@ final class Workspace: Identifiable, ObservableObject {
             .eraseToAnyPublisher()
     }
 
-    lazy var sidebarObservationPublisher: AnyPublisher<Void, Never> = {
+    lazy var sidebarImmediateObservationPublisher: AnyPublisher<Void, Never> = {
         let publishers: [AnyPublisher<Void, Never>] = [
             sidebarObservationSignal($title),
+            sidebarObservationSignal($customDescription),
             sidebarObservationSignal($isPinned),
             sidebarObservationSignal($customColor),
+        ]
+
+        return Publishers.MergeMany(publishers).eraseToAnyPublisher()
+    }()
+
+    lazy var sidebarObservationPublisher: AnyPublisher<Void, Never> = {
+        let publishers: [AnyPublisher<Void, Never>] = [
             sidebarObservationSignal($currentDirectory),
             $panels
                 .map(SidebarPanelObservationState.init)
@@ -5934,6 +5960,7 @@ final class Workspace: Identifiable, ObservableObject {
         self.processTitle = title
         self.title = title
         self.customTitle = nil
+        self.customDescription = nil
 
         let trimmedWorkingDirectory = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let hasWorkingDirectory = !trimmedWorkingDirectory.isEmpty
@@ -6586,6 +6613,10 @@ final class Workspace: Identifiable, ObservableObject {
         return !trimmed.isEmpty
     }
 
+    var hasCustomDescription: Bool {
+        Self.normalizedCustomDescription(customDescription) != nil
+    }
+
     func applyProcessTitle(_ title: String) {
         processTitle = title
         guard customTitle == nil else { return }
@@ -6600,6 +6631,15 @@ final class Workspace: Identifiable, ObservableObject {
         }
     }
 
+    private static func normalizedCustomDescription(_ description: String?) -> String? {
+        let normalizedLineEndings = description?
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let trimmed = normalizedLineEndings?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        return normalizedLineEndings
+    }
+
     func setCustomTitle(_ title: String?) {
         let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if trimmed.isEmpty {
@@ -6609,6 +6649,28 @@ final class Workspace: Identifiable, ObservableObject {
             customTitle = trimmed
             self.title = trimmed
         }
+    }
+
+    func setCustomDescription(_ description: String?) {
+        let normalizedDescription = Self.normalizedCustomDescription(description)
+#if DEBUG
+        let inputNewlines = description?.reduce(into: 0) { count, character in
+            if character == "\n" { count += 1 }
+        } ?? 0
+        let normalizedNewlines = normalizedDescription?.reduce(into: 0) { count, character in
+            if character == "\n" { count += 1 }
+        } ?? 0
+        dlog(
+            "workspace.customDescription.update workspace=\(id.uuidString.prefix(8)) " +
+            "inputLen=\((description as NSString?)?.length ?? 0) " +
+            "inputNewlines=\(inputNewlines) " +
+            "normalizedLen=\((normalizedDescription as NSString?)?.length ?? 0) " +
+            "normalizedNewlines=\(normalizedNewlines) " +
+            "input=\"\(debugWorkspaceDescriptionPreview(description))\" " +
+            "normalized=\"\(debugWorkspaceDescriptionPreview(normalizedDescription))\""
+        )
+#endif
+        customDescription = normalizedDescription
     }
 
     // MARK: - Directory Updates
