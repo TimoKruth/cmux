@@ -251,6 +251,7 @@ struct SessionPanelSnapshot: Codable, Sendable {
     var gitBranch: SessionGitBranchSnapshot?
     var listeningPorts: [Int]
     var ttyName: String?
+    var t3codeThreadId: String?
     var terminal: SessionTerminalPanelSnapshot?
     var browser: SessionBrowserPanelSnapshot?
     var markdown: SessionMarkdownPanelSnapshot?
@@ -328,8 +329,10 @@ indirect enum SessionWorkspaceLayoutSnapshot: Codable, Sendable {
 }
 
 struct SessionWorkspaceSnapshot: Codable, Sendable {
+    var id: UUID?
     var processTitle: String
     var customTitle: String?
+    var customDescription: String?
     var customColor: String?
     var isPinned: Bool
     var currentDirectory: String
@@ -340,11 +343,14 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var logEntries: [SessionLogEntrySnapshot]
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
+    var writers: [SessionWriterSnapshot]?
+    var activeWriterId: UUID?
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {
     var selectedWorkspaceIndex: Int?
     var workspaces: [SessionWorkspaceSnapshot]
+    var projects: [SessionProjectSnapshot]?
 }
 
 struct SessionWindowSnapshot: Codable, Sendable {

@@ -460,7 +460,7 @@ struct BrowserPanelView: View {
                     searchState: searchState,
                     focusRequestGeneration: panel.searchFocusRequestGeneration,
                     canApplyFocusRequest: { generation in
-                        panel.canApplySearchFocusRequest(generation)
+                        canApplyBrowserFindFieldFocusRequest(generation)
                     },
                     onNext: { panel.findNext() },
                     onPrevious: { panel.findPrevious() },
@@ -588,6 +588,7 @@ struct BrowserPanelView: View {
             if isWebViewBlank() {
                 refreshEmptyStateImportBrowsers()
             }
+            panel.resetReactGrabState()
         }
         .onChange(of: browserThemeModeRaw) { _ in
             let normalizedMode = BrowserThemeSettings.mode(for: browserThemeModeRaw)
@@ -732,6 +733,7 @@ struct BrowserPanelView: View {
                 if shouldShowToolbarImportHintChip {
                     browserImportHintToolbarChip
                 }
+                reactGrabButton
                 browserProfileButton
                 browserThemeModeButton
                 developerToolsButton
@@ -821,6 +823,23 @@ struct BrowserPanelView: View {
                 .safeHelp(String(localized: "browser.downloadInProgress", defaultValue: "Download in progress"))
             }
         }
+    }
+
+    private var reactGrabButton: some View {
+        Button(action: {
+            Task { await panel.toggleOrInjectReactGrab() }
+        }) {
+            Image(systemName: "cursorarrow.click.2")
+                .symbolRenderingMode(.monochrome)
+                .cmuxFlatSymbolColorRendering()
+                .font(.system(size: devToolsButtonIconSize, weight: .medium))
+                .foregroundStyle(panel.isReactGrabActive ? Color.accentColor : Color.secondary)
+                .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+        }
+        .buttonStyle(OmnibarAddressButtonStyle())
+        .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+        .safeHelp(String(localized: "browser.reactGrab", defaultValue: "Inject React Grab"))
+        .accessibilityIdentifier("BrowserReactGrabButton")
     }
 
     private var developerToolsButton: some View {
@@ -1133,7 +1152,7 @@ struct BrowserPanelView: View {
                             searchState: searchState,
                             focusRequestGeneration: panel.searchFocusRequestGeneration,
                             canApplyFocusRequest: { generation in
-                                panel.canApplySearchFocusRequest(generation)
+                                canApplyBrowserFindFieldFocusRequest(generation)
                             },
                             onNext: { panel.findNext() },
                             onPrevious: { panel.findPrevious() },
@@ -1297,6 +1316,10 @@ struct BrowserPanelView: View {
             return false
         }
         return workspace.focusedPanelId == panel.id
+    }
+
+    private func canApplyBrowserFindFieldFocusRequest(_ generation: UInt64) -> Bool {
+        isPanelFocusedInModel() && panel.canApplySearchFocusRequest(generation)
     }
 
     private func shouldApplyAddressBarExitFallback(in window: NSWindow) -> Bool {

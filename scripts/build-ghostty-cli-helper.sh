@@ -78,6 +78,16 @@ if [[ -n "$TARGET_TRIPLE" ]]; then
       exit 1
       ;;
   esac
+
+  # When the requested target matches zig's native output arch, drop -Dtarget
+  # so zig uses native compilation. This avoids cross-linker issues on newer
+  # SDKs (e.g., macOS Tahoe + zig 0.15.x). Note: zig may run under Rosetta,
+  # so we detect native output arch from the zig binary itself, not uname -m.
+  ZIG_ARCH="$(file "$(command -v zig)" 2>/dev/null | grep -oE '(arm64|x86_64)' | head -1)"
+  case "$TARGET_TRIPLE" in
+    aarch64-macos) [[ "$ZIG_ARCH" == "arm64" ]] && TARGET_TRIPLE="" ;;
+    x86_64-macos)  [[ "$ZIG_ARCH" == "x86_64" ]] && TARGET_TRIPLE="" ;;
+  esac
 fi
 
 if ! command -v zig >/dev/null 2>&1; then
@@ -114,6 +124,42 @@ build_helper() {
   )
 }
 
+reuse_existing_helper() {
+  local output_path="$1"
+  local requested_target="${2:-}"
+  local existing_helper="$GHOSTTY_DIR/zig-out/bin/ghostty"
+
+  if [[ ! -x "$existing_helper" ]]; then
+    return 1
+  fi
+
+  local helper_file
+  helper_file="$(file "$existing_helper" 2>/dev/null || true)"
+  case "$requested_target" in
+    aarch64-macos)
+      [[ "$helper_file" == *"arm64"* ]] || return 1
+      ;;
+    x86_64-macos)
+      [[ "$helper_file" == *"x86_64"* ]] || return 1
+      ;;
+  esac
+
+  echo "warning: reusing existing Ghostty CLI helper after zig build failure: $existing_helper" >&2
+  mkdir -p "$(dirname "$output_path")"
+  install -m 755 "$existing_helper" "$output_path"
+}
+
+build_helper_or_reuse_existing() {
+  local prefix="$1"
+  local target="${2:-}"
+
+  if build_helper "$prefix" "$target"; then
+    return 0
+  fi
+
+  reuse_existing_helper "$prefix/bin/ghostty" "$target"
+}
+
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cmux-ghostty-helper.XXXXXX")"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
@@ -122,15 +168,25 @@ mkdir -p "$(dirname "$OUTPUT_PATH")"
 if [[ "$UNIVERSAL" == "true" ]]; then
   ARM64_PREFIX="$TMP_DIR/arm64"
   X86_PREFIX="$TMP_DIR/x86_64"
-  build_helper "$ARM64_PREFIX" "aarch64-macos"
-  build_helper "$X86_PREFIX" "x86_64-macos"
+  ZIG_ARCH="$(file "$(command -v zig)" 2>/dev/null | grep -oE '(arm64|x86_64)' | head -1)"
+  # Use native compilation for the matching arch to avoid cross-linker issues
+  if [[ "$ZIG_ARCH" == "arm64" ]]; then
+    build_helper_or_reuse_existing "$ARM64_PREFIX" ""
+    build_helper_or_reuse_existing "$X86_PREFIX" "x86_64-macos"
+  elif [[ "$ZIG_ARCH" == "x86_64" ]]; then
+    build_helper_or_reuse_existing "$ARM64_PREFIX" "aarch64-macos"
+    build_helper_or_reuse_existing "$X86_PREFIX" ""
+  else
+    build_helper_or_reuse_existing "$ARM64_PREFIX" "aarch64-macos"
+    build_helper_or_reuse_existing "$X86_PREFIX" "x86_64-macos"
+  fi
   /usr/bin/lipo -create \
     "$ARM64_PREFIX/bin/ghostty" \
     "$X86_PREFIX/bin/ghostty" \
     -output "$OUTPUT_PATH"
 else
   SINGLE_PREFIX="$TMP_DIR/single"
-  build_helper "$SINGLE_PREFIX" "$TARGET_TRIPLE"
+  build_helper_or_reuse_existing "$SINGLE_PREFIX" "$TARGET_TRIPLE"
   install -m 755 "$SINGLE_PREFIX/bin/ghostty" "$OUTPUT_PATH"
 fi
 

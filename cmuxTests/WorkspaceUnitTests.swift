@@ -6,6 +6,7 @@ import WebKit
 import ObjectiveC.runtime
 import Bonsplit
 import UserNotifications
+import Combine
 
 #if canImport(cmux_DEV)
 @testable import cmux_DEV
@@ -211,6 +212,28 @@ final class WorkspaceShortcutMapperTests: XCTestCase {
     }
 }
 
+@MainActor
+final class WorkspaceCustomDescriptionTests: XCTestCase {
+    func testSetCustomDescriptionPreservesMeaningfulLeadingAndTrailingWhitespace() {
+        let workspace = Workspace()
+        let description = "  line one\n\nline two\n\n"
+
+        workspace.setCustomDescription(description)
+
+        XCTAssertEqual(workspace.customDescription, description)
+        XCTAssertTrue(workspace.hasCustomDescription)
+    }
+
+    func testSetCustomDescriptionClearsWhitespaceOnlyDescriptions() {
+        let workspace = Workspace()
+
+        workspace.setCustomDescription(" \n\t \n")
+
+        XCTAssertNil(workspace.customDescription)
+        XCTAssertFalse(workspace.hasCustomDescription)
+    }
+}
+
 
 final class WorkspacePlacementSettingsTests: XCTestCase {
     func testCurrentPlacementDefaultsToAfterCurrentWhenUnset() {
@@ -306,9 +329,10 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
             title: String,
             workingDirectory: String?,
             portOrdinal: Int,
-            configTemplate: ghostty_surface_config_s?,
+            configTemplate: CmuxSurfaceConfigTemplate?,
             initialTerminalCommand: String?,
-            initialTerminalEnvironment: [String: String]
+            initialTerminalEnvironment: [String: String],
+            skipInitialTerminal: Bool = false
         ) -> Workspace {
             beforeCreateWorkspace?()
             return super.makeWorkspaceForCreation(
@@ -317,7 +341,8 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
                 portOrdinal: portOrdinal,
                 configTemplate: configTemplate,
                 initialTerminalCommand: initialTerminalCommand,
-                initialTerminalEnvironment: initialTerminalEnvironment
+                initialTerminalEnvironment: initialTerminalEnvironment,
+                skipInitialTerminal: skipInitialTerminal
             )
         }
     }
@@ -448,6 +473,87 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
         XCTAssertEqual(manager.selectedTabId, inserted.id)
     }
 
+    func testAddWorkspaceSurvivesMidCreationClose() {
+        let manager = SnapshotMutatingTabManager()
+        guard let first = manager.tabs.first else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+
+        let closingWorkspace = manager.addWorkspace()
+        let third = manager.addWorkspace()
+        manager.selectWorkspace(third)
+
+        let closingWorkspaceId = closingWorkspace.id
+        XCTAssertEqual(manager.tabs.map(\.id), [first.id, closingWorkspaceId, third.id])
+
+        manager.afterCaptureWorkspaceCreationSnapshot = {
+            guard let liveWorkspace = manager.tabs.first(where: { $0.id == closingWorkspaceId }) else {
+                XCTFail("Expected captured workspace to still be present when closing after snapshot")
+                return
+            }
+            manager.closeWorkspace(liveWorkspace)
+        }
+
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertFalse(manager.tabs.contains(where: { $0.id == closingWorkspaceId }))
+        XCTAssertEqual(manager.tabs.map(\.id), [first.id, third.id, inserted.id])
+        XCTAssertEqual(manager.selectedTabId, inserted.id)
+    }
+
+    func testAddWorkspaceAfterCurrentUsesSnapshotPinnedStateWhenPinningMutatesAfterSnapshot() {
+        let manager = SnapshotMutatingTabManager()
+        guard let first = manager.tabs.first else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+
+        manager.setPinned(first, pinned: true)
+        let second = manager.addWorkspace()
+        let third = manager.addWorkspace()
+        manager.selectWorkspace(first)
+        let baselineOrder = manager.tabs.map(\.id)
+
+        manager.afterCaptureWorkspaceCreationSnapshot = {
+            manager.setPinned(first, pinned: false)
+        }
+
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertEqual(manager.tabs.map(\.id).filter { $0 != inserted.id }, baselineOrder)
+        XCTAssertEqual(manager.tabs.map(\.id), [first.id, inserted.id, second.id, third.id])
+        XCTAssertEqual(manager.selectedTabId, inserted.id)
+    }
+
+    func testAddWorkspaceAfterCurrentFollowsLiveReorderUsingSnapshotTabValues() {
+        let manager = SnapshotMutatingTabManager()
+        guard let first = manager.tabs.first else {
+            XCTFail("Expected initial workspace")
+            return
+        }
+
+        let second = manager.addWorkspace()
+        let third = manager.addWorkspace()
+        manager.selectWorkspace(second)
+
+        manager.afterCaptureWorkspaceCreationSnapshot = {
+            XCTAssertTrue(
+                manager.reorderWorkspace(tabId: third.id, toIndex: 0),
+                "Expected to reorder live workspaces after the snapshot is captured"
+            )
+        }
+
+        let inserted = manager.addWorkspace(placementOverride: .afterCurrent)
+
+        XCTAssertEqual(
+            manager.tabs.map(\.id).filter { $0 != inserted.id },
+            [third.id, first.id, second.id]
+        )
+        XCTAssertEqual(manager.tabs.map(\.id), [third.id, first.id, second.id, inserted.id])
+        XCTAssertEqual(manager.selectedTabId, inserted.id)
+    }
+
     private func makeManagerWithThreeWorkspaces() -> TabManager {
         let manager = TabManager()
         _ = manager.addWorkspace()
@@ -456,6 +562,67 @@ final class WorkspaceCreationPlacementTests: XCTestCase {
             manager.selectWorkspace(first)
         }
         return manager
+    }
+}
+
+@MainActor
+final class WorkspaceCreationConfigSanitizationTests: XCTestCase {
+    private final class UnsafeConfigSnapshotTabManager: TabManager {
+        private var injectedConfig: CmuxSurfaceConfigTemplate?
+        var capturedConfigTemplate: CmuxSurfaceConfigTemplate?
+
+        func installInjectedConfig(fontSize: Float) {
+            var config = CmuxSurfaceConfigTemplate()
+            config.fontSize = fontSize
+            config.workingDirectory = "/tmp/cmux-workspace-snapshot"
+            config.command = "echo snapshot"
+            config.environmentVariables = ["CMUX_INHERITED_ENV": "1"]
+            injectedConfig = config
+        }
+
+        override func inheritedTerminalConfigForNewWorkspace(
+            workspace: Workspace?
+        ) -> CmuxSurfaceConfigTemplate? {
+            injectedConfig ?? super.inheritedTerminalConfigForNewWorkspace(workspace: workspace)
+        }
+
+        override func makeWorkspaceForCreation(
+            title: String,
+            workingDirectory: String?,
+            portOrdinal: Int,
+            configTemplate: CmuxSurfaceConfigTemplate?,
+            initialTerminalCommand: String?,
+            initialTerminalEnvironment: [String: String],
+            skipInitialTerminal: Bool = false
+        ) -> Workspace {
+            capturedConfigTemplate = configTemplate
+            return super.makeWorkspaceForCreation(
+                title: title,
+                workingDirectory: workingDirectory,
+                portOrdinal: portOrdinal,
+                configTemplate: configTemplate,
+                initialTerminalCommand: initialTerminalCommand,
+                initialTerminalEnvironment: initialTerminalEnvironment,
+                skipInitialTerminal: skipInitialTerminal
+            )
+        }
+    }
+
+    func testAddWorkspacePassesSanitizedInheritedConfigTemplate() {
+        let manager = UnsafeConfigSnapshotTabManager()
+        manager.installInjectedConfig(fontSize: 19)
+
+        _ = manager.addWorkspace()
+
+        guard let capturedConfig = manager.capturedConfigTemplate else {
+            XCTFail("Expected captured config template for new workspace")
+            return
+        }
+
+        XCTAssertEqual(capturedConfig.fontSize, 19, accuracy: 0.001)
+        XCTAssertNil(capturedConfig.workingDirectory)
+        XCTAssertNil(capturedConfig.command)
+        XCTAssertTrue(capturedConfig.environmentVariables.isEmpty)
     }
 }
 
@@ -906,6 +1073,48 @@ final class WorkspaceTeardownTests: XCTestCase {
 
 @MainActor
 final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
+    private func waitForCondition(
+        timeout: TimeInterval = 2,
+        pollInterval: TimeInterval = 0.01,
+        _ condition: () -> Bool
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if condition() {
+                return true
+            }
+            RunLoop.current.run(until: Date().addingTimeInterval(pollInterval))
+        }
+        return condition()
+    }
+
+    private func hostTerminalPanelInWindow(_ panel: TerminalPanel) throws -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 280),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+
+        let contentView = try XCTUnwrap(window.contentView, "Expected content view")
+
+        let hostedView = panel.hostedView
+        hostedView.frame = contentView.bounds
+        hostedView.autoresizingMask = [.width, .height]
+        contentView.addSubview(hostedView)
+
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        contentView.layoutSubtreeIfNeeded()
+        XCTAssertTrue(
+            waitForCondition {
+                panel.surface.surface != nil
+            },
+            "Expected runtime surface to materialize after hosting panel in a window"
+        )
+        return window
+    }
+
     func testNewTerminalSplitFallsBackToRequestedWorkingDirectoryWhenReportedDirectoryIsStale() {
         let workspace = Workspace()
         guard let sourcePaneId = workspace.bonsplitController.focusedPaneId else {
@@ -949,6 +1158,72 @@ final class WorkspaceSplitWorkingDirectoryTests: XCTestCase {
             requestedDirectory,
             "Expected split to inherit the source terminal's requested cwd when no reported cwd exists yet"
         )
+    }
+
+    func testNewTerminalSplitSkipsFreedInheritedSurfacePointer() throws {
+#if DEBUG
+        let workspace = Workspace()
+        guard let sourcePanelId = workspace.focusedPanelId,
+              let sourcePanel = workspace.terminalPanel(for: sourcePanelId) else {
+            XCTFail("Expected focused terminal panel")
+            return
+        }
+
+        let window = try hostTerminalPanelInWindow(sourcePanel)
+        defer { window.orderOut(nil) }
+
+        XCTAssertNotNil(sourcePanel.surface.surface, "Expected runtime surface before forcing stale pointer")
+
+        sourcePanel.surface.replaceSurfaceWithFreedPointerForTesting()
+        XCTAssertNotNil(
+            sourcePanel.surface.surface,
+            "Expected Swift wrapper to remain non-nil while simulating a stale native surface"
+        )
+
+        let splitPanel = workspace.newTerminalSplit(
+            from: sourcePanelId,
+            orientation: .horizontal,
+            focus: false
+        )
+
+        XCTAssertNotNil(splitPanel, "Expected split creation to survive a stale inherited surface pointer")
+        XCTAssertNil(sourcePanel.surface.surface, "Expected stale surface pointer to be quarantined")
+#else
+        throw XCTSkip("Debug-only regression test")
+#endif
+    }
+
+    func testNewTerminalSurfaceSkipsFreedInheritedSurfacePointer() throws {
+#if DEBUG
+        let workspace = Workspace()
+        guard let sourcePanelId = workspace.focusedPanelId,
+              let sourcePanel = workspace.terminalPanel(for: sourcePanelId),
+              let sourcePaneId = workspace.paneId(forPanelId: sourcePanelId) else {
+            XCTFail("Expected focused terminal panel and pane")
+            return
+        }
+
+        let window = try hostTerminalPanelInWindow(sourcePanel)
+        defer { window.orderOut(nil) }
+
+        XCTAssertNotNil(sourcePanel.surface.surface, "Expected runtime surface before forcing stale pointer")
+
+        sourcePanel.surface.replaceSurfaceWithFreedPointerForTesting()
+        XCTAssertNotNil(
+            sourcePanel.surface.surface,
+            "Expected Swift wrapper to remain non-nil while simulating a stale native surface"
+        )
+
+        let createdPanel = workspace.newTerminalSurface(
+            inPane: sourcePaneId,
+            focus: false
+        )
+
+        XCTAssertNotNil(createdPanel, "Expected terminal creation to survive a stale inherited surface pointer")
+        XCTAssertNil(sourcePanel.surface.surface, "Expected stale surface pointer to be quarantined")
+#else
+        throw XCTSkip("Debug-only regression test")
+#endif
     }
 }
 
@@ -1102,6 +1377,64 @@ final class WorkspaceTerminalFocusRecoveryTests: XCTestCase {
             rightPanel.hostedView.isSurfaceViewFirstResponder(),
             "Expected the clicked split pane to become first responder"
         )
+    }
+
+    func testClearSuppressReparentFocusReassertsGhosttyFocusForCurrentFirstResponder() throws {
+#if DEBUG
+        let workspace = Workspace()
+        guard let leftPanelId = workspace.focusedPanelId,
+              let leftPanel = workspace.terminalPanel(for: leftPanelId),
+              let rightPanel = workspace.newTerminalSplit(from: leftPanelId, orientation: .horizontal) else {
+            XCTFail("Expected split terminal panels")
+            return
+        }
+
+        let window = makeWindow()
+        defer { window.orderOut(nil) }
+        guard let contentView = window.contentView else {
+            XCTFail("Expected content view")
+            return
+        }
+
+        leftPanel.hostedView.frame = NSRect(x: 0, y: 0, width: 180, height: 220)
+        rightPanel.hostedView.frame = NSRect(x: 180, y: 0, width: 180, height: 220)
+        contentView.addSubview(leftPanel.hostedView)
+        contentView.addSubview(rightPanel.hostedView)
+
+        leftPanel.hostedView.setVisibleInUI(true)
+        rightPanel.hostedView.setVisibleInUI(true)
+        window.makeKeyAndOrderFront(nil)
+        window.displayIfNeeded()
+        contentView.layoutSubtreeIfNeeded()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        guard let leftSurfaceView = surfaceView(in: leftPanel.hostedView) else {
+            XCTFail("Expected left terminal surface view")
+            return
+        }
+
+        leftPanel.surface.setFocus(false)
+        rightPanel.surface.setFocus(true)
+        leftPanel.hostedView.suppressReparentFocus()
+
+        XCTAssertTrue(window.makeFirstResponder(leftSurfaceView))
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertFalse(
+            leftPanel.surface.debugDesiredFocusState(),
+            "Suppressed reparent focus should not immediately flip the Ghostty focus bit"
+        )
+
+        leftPanel.hostedView.clearSuppressReparentFocus()
+        RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertTrue(
+            leftPanel.surface.debugDesiredFocusState(),
+            "Clearing reparent-focus suppression should reassert Ghostty focus when the surface still owns first responder"
+        )
+#else
+        throw XCTSkip("Debug-only regression test")
+#endif
     }
 }
 
@@ -1803,6 +2136,133 @@ final class WorkspacePanelGitBranchTests: XCTestCase {
         let ordered = workspace.sidebarGitBranchesInDisplayOrder()
         XCTAssertEqual(ordered.map(\.branch), ["main", "feature/sidebar"])
         XCTAssertEqual(ordered.map(\.isDirty), [false, true])
+    }
+
+    func testUpdatingFocusedPanelGitBranchWithSameStateDoesNotRepublishWorkspace() {
+        let workspace = Workspace()
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected initial focused panel")
+            return
+        }
+
+        var publishCount = 0
+        let cancellable = workspace.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "main", isDirty: false)
+        let baselinePublishCount = publishCount
+
+        XCTAssertGreaterThan(
+            baselinePublishCount,
+            0,
+            "Expected the first focused branch update to publish workspace changes"
+        )
+
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "main", isDirty: false)
+
+        XCTAssertEqual(
+            publishCount,
+            baselinePublishCount,
+            "Expected identical focused branch refreshes to avoid extra workspace publishes"
+        )
+    }
+
+    func testUpdatingFocusedPanelPullRequestWithSameStateDoesNotRepublishWorkspace() {
+        let workspace = Workspace()
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected initial focused panel")
+            return
+        }
+
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "feature/sidebar-pr", isDirty: false)
+
+        var publishCount = 0
+        let cancellable = workspace.objectWillChange.sink { _ in
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        let pullRequestURL = URL(string: "https://github.com/manaflow-ai/cmux/pull/2388")!
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 2388,
+            label: "PR",
+            url: pullRequestURL,
+            status: .open,
+            branch: "feature/sidebar-pr"
+        )
+        let baselinePublishCount = publishCount
+
+        XCTAssertGreaterThan(
+            baselinePublishCount,
+            0,
+            "Expected the first focused pull request update to publish workspace changes"
+        )
+
+        workspace.updatePanelPullRequest(
+            panelId: panelId,
+            number: 2388,
+            label: "PR",
+            url: pullRequestURL,
+            status: .open,
+            branch: "feature/sidebar-pr"
+        )
+
+        XCTAssertEqual(
+            publishCount,
+            baselinePublishCount,
+            "Expected identical focused pull request refreshes to avoid extra workspace publishes"
+        )
+    }
+
+    func testSidebarObservationPublisherEmitsForFocusedGitBranchChangesOnlyOncePerState() {
+        let workspace = Workspace()
+        guard let panelId = workspace.focusedPanelId else {
+            XCTFail("Expected initial focused panel")
+            return
+        }
+
+        var publishCount = 0
+        let cancellable = workspace.sidebarObservationPublisher.sink {
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "main", isDirty: false)
+        let baselinePublishCount = publishCount
+        XCTAssertGreaterThan(
+            baselinePublishCount,
+            0,
+            "Expected focused git branch updates to invalidate sidebar rows"
+        )
+
+        workspace.updatePanelGitBranch(panelId: panelId, branch: "main", isDirty: false)
+        XCTAssertEqual(
+            publishCount,
+            baselinePublishCount,
+            "Expected identical git metadata refreshes to be ignored by sidebar rows"
+        )
+    }
+
+    func testSidebarObservationPublisherIgnoresRemoteHeartbeatOnlyChanges() {
+        let workspace = Workspace()
+
+        var publishCount = 0
+        let cancellable = workspace.sidebarObservationPublisher.sink {
+            publishCount += 1
+        }
+        defer { cancellable.cancel() }
+
+        workspace.remoteHeartbeatCount = 1
+        workspace.remoteLastHeartbeatAt = Date()
+
+        XCTAssertEqual(
+            publishCount,
+            0,
+            "Expected non-visible remote heartbeat updates to avoid invalidating sidebar rows"
+        )
     }
 
     @MainActor
