@@ -13350,7 +13350,7 @@ struct CMUXCLI {
         let sessionStore = ClaudeHookSessionStore(
             processEnv: env.merging(
                 ["CMUX_CLAUDE_HOOK_STATE_PATH": "~/.cmuxterm/codex-hook-sessions.json"],
-                uniquingKeysWith: { _, new in new }
+                uniquingKeysWith: { current, _ in current }
             )
         )
         telemetry.breadcrumb(
