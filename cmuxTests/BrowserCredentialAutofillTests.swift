@@ -227,18 +227,38 @@ final class CredentialDetectorScriptTests: XCTestCase {
     }
 }
 
-// MARK: - KeychainCredentialStore Integration Tests
+// MARK: - KeychainCredentialStore Tests
 
 final class KeychainCredentialStoreTests: XCTestCase {
-    // These tests exercise the actual Keychain API against a test-specific domain
-    // that is extremely unlikely to collide with real credentials.
+    // These tests exercise the actual Keychain API against a test-specific domain.
+    // SecItemAdd may fail in unsigned test runners (CI, detached codesign environments),
+    // so tests that require write access skip gracefully when Keychain writes are unavailable.
     private let testServer = "cmux-unit-test-\(ProcessInfo.processInfo.processIdentifier).local"
     private let testUsername = "cmux-test-user"
     private let testPassword = "cmux-test-password-\(UUID().uuidString)"
 
+    private var keychainWriteAvailable: Bool {
+        // Probe whether the Keychain allows writes AND reads by attempting a round-trip.
+        // In unsigned test runners, SecItemAdd may succeed but SecItemCopyMatching
+        // returns no results due to missing codesign/entitlements.
+        let probeServer = "cmux-keychain-probe-\(ProcessInfo.processInfo.processIdentifier).local"
+        let probePassword = UUID().uuidString
+        let saved = KeychainCredentialStore.save(
+            username: "probe", password: probePassword, server: probeServer
+        )
+        guard saved else { return false }
+        let retrieved = KeychainCredentialStore.credentials(for: probeServer)
+        // Clean up regardless.
+        let query: [CFString: Any] = [
+            kSecClass: kSecClassInternetPassword,
+            kSecAttrServer: probeServer,
+        ]
+        SecItemDelete(query as CFDictionary)
+        return retrieved.contains(where: { $0.password == probePassword })
+    }
+
     override func tearDown() {
         super.tearDown()
-        // Clean up any test credential we may have inserted.
         let query: [CFString: Any] = [
             kSecClass: kSecClassInternetPassword,
             kSecAttrServer: testServer,
@@ -251,7 +271,9 @@ final class KeychainCredentialStoreTests: XCTestCase {
         XCTAssertTrue(creds.isEmpty, "No credentials should exist for the test server")
     }
 
-    func testSaveAndRetrieveCredential() {
+    func testSaveAndRetrieveCredential() throws {
+        try XCTSkipUnless(keychainWriteAvailable, "Keychain writes unavailable in this environment")
+
         let saved = KeychainCredentialStore.save(
             username: testUsername,
             password: testPassword,
@@ -266,7 +288,9 @@ final class KeychainCredentialStoreTests: XCTestCase {
         XCTAssertEqual(creds.first?.server, testServer)
     }
 
-    func testSaveUpdatesExistingCredential() {
+    func testSaveUpdatesExistingCredential() throws {
+        try XCTSkipUnless(keychainWriteAvailable, "Keychain writes unavailable in this environment")
+
         let saved1 = KeychainCredentialStore.save(
             username: testUsername,
             password: "old-password",
@@ -287,7 +311,9 @@ final class KeychainCredentialStoreTests: XCTestCase {
         XCTAssertEqual(creds.first?.password, updatedPassword)
     }
 
-    func testSaveMultipleUsersForSameServer() {
+    func testSaveMultipleUsersForSameServer() throws {
+        try XCTSkipUnless(keychainWriteAvailable, "Keychain writes unavailable in this environment")
+
         let saved1 = KeychainCredentialStore.save(
             username: "user-a",
             password: "pass-a",
