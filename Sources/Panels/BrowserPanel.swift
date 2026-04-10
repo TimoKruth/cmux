@@ -2263,6 +2263,17 @@ final class BrowserPanel: Panel, ObservableObject {
     var pendingReactGrabReturnTargetPanelId: UUID?
     var pendingReactGrabRoundTripToken: String?
     let reactGrabBridgeSessionUpdaterName = "__cmuxReactGrabBridgeSync_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+    // Credential autofill state
+    var credentialDetectorHandler: CredentialDetectorMessageHandler?
+    @Published var credentialDetectedDomain: String?
+    @Published var hasKeychainCredentials: Bool = false
+    var credentialAutoFillOnce: Bool = true
+    var pendingSaveCredential: (username: String, password: String, domain: String)?
+    var credentialSaveExcludedDomains: Set<String> = {
+        let key = "BrowserCredentialSaveExcludedDomains"
+        let saved = UserDefaults.standard.stringArray(forKey: key) ?? []
+        return Set(saved)
+    }()
     private var preferredDeveloperToolsPresentation: DeveloperToolsPresentation = .unknown
     private var forceDeveloperToolsRefreshOnNextAttach: Bool = false
     private var developerToolsRestoreRetryWorkItem: DispatchWorkItem?
@@ -2548,6 +2559,15 @@ final class BrowserPanel: Panel, ObservableObject {
                 forMainFrameOnly: true
             )
         )
+        // Credential autofill: detect login forms after document load.
+        // Main frame only — avoid CAPTCHA interference from cross-origin iframes.
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: credentialDetectorScript,
+                injectionTime: .atDocumentEnd,
+                forMainFrameOnly: true
+            )
+        )
     }
 
     private func bindWebView(_ webView: CmuxWebView) {
@@ -2566,6 +2586,7 @@ final class BrowserPanel: Panel, ObservableObject {
         webView.uiDelegate = uiDelegate
         setupObservers(for: webView)
         setupReactGrabMessageHandler(for: webView)
+        setupCredentialDetectorMessageHandler(for: webView)
     }
 
     private func configureNavigationDelegateCallbacks() {
@@ -2581,6 +2602,11 @@ final class BrowserPanel: Panel, ObservableObject {
                 self.refreshFavicon(from: webView)
                 // Keep find-in-page open through load completion and refresh matches for the new DOM.
                 self.restoreFindStateAfterNavigation(replaySearch: true)
+                // Credential save: if we previously captured a login form submission
+                // and have now navigated away from the login page, offer to save.
+                self.offerCredentialSaveIfNeeded()
+                // Reset auto-fill-once flag for new pages.
+                self.credentialAutoFillOnce = true
             }
         }
         navigationDelegate.didFailNavigation = { [weak self] failedWebView, failedURL in

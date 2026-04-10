@@ -847,6 +847,7 @@ struct BrowserPanelView: View {
                 if shouldShowToolbarImportHintChip {
                     browserImportHintToolbarChip
                 }
+                credentialAutofillButton
                 reactGrabButton
                 browserProfileButton
                 browserThemeModeButton
@@ -936,6 +937,25 @@ struct BrowserPanelView: View {
                 .padding(.leading, 6)
                 .safeHelp(String(localized: "browser.downloadInProgress", defaultValue: "Download in progress"))
             }
+        }
+    }
+
+    @ViewBuilder
+    private var credentialAutofillButton: some View {
+        if panel.hasKeychainCredentials {
+            Button(action: {
+                panel.showCredentialPicker(relativeTo: nil)
+            }) {
+                Image(systemName: "key.fill")
+                    .symbolRenderingMode(.monochrome)
+                    .font(.system(size: devToolsButtonIconSize, weight: .medium))
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+            }
+            .buttonStyle(OmnibarAddressButtonStyle())
+            .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+            .safeHelp(String(localized: "browser.credential.autofill", defaultValue: "Fill Password"))
+            .accessibilityIdentifier("BrowserCredentialAutofillButton")
         }
     }
 
