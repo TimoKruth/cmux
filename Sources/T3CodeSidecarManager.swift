@@ -18,6 +18,12 @@ final class T3CodeSidecarManager {
     /// The .cmux home directory for this workspace (passed as --base-dir to t3code).
     private var homeDir: String { projectDirectory.appendingPathComponent(".cmux").path }
 
+    /// Host-side log directory for cmux-managed sidecar bootstrap output.
+    private var hostLogsDir: String { (homeDir as NSString).appendingPathComponent("logs") }
+
+    /// Combined stdout/stderr log for the spawned sidecar process.
+    private var sidecarLogPath: String { (hostLogsDir as NSString).appendingPathComponent("sidecar.log") }
+
     /// The t3code "userdata" state directory (derived by the server as {homeDir}/userdata).
     private var stateDir: String { (homeDir as NSString).appendingPathComponent("userdata") }
 
@@ -26,6 +32,9 @@ final class T3CodeSidecarManager {
 
     /// The running Node.js process.
     private var process: Process?
+
+    /// File handle for combined sidecar stdout/stderr logging.
+    private var sidecarLogHandle: FileHandle?
 
     /// Whether we're intentionally shutting down (suppress restart).
     private var isShuttingDown = false
@@ -38,6 +47,9 @@ final class T3CodeSidecarManager {
 
     /// Prevent duplicate port publication while startup probes converge.
     private var hasPublishedPort = false
+
+    /// Stable bootstrap token exposed to the embedded web client for this workspace.
+    private(set) var desktopBootstrapToken: String = UUID().uuidString.lowercased()
 
     /// Callback when a port is assigned so consumers can start readiness polling.
     var onReady: ((Int) -> Void)?
@@ -66,8 +78,9 @@ final class T3CodeSidecarManager {
         isRestartPending = false
         hasPublishedPort = false
 
-        // Create .cmux directory if needed
+        // Create .cmux directories if needed
         try? FileManager.default.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(atPath: hostLogsDir, withIntermediateDirectories: true)
 
         // Clean up stale port file from previous run
         try? FileManager.default.removeItem(atPath: portFilePath)
@@ -87,17 +100,20 @@ final class T3CodeSidecarManager {
         port = selectedPort
 
         let proc = Process()
+        let bootstrapPipe = Pipe()
         proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         proc.arguments = [
             "node",
             serverBinary,
             "--port", String(selectedPort),
             "--base-dir", homeDir,
+            "--bootstrap-fd", "0",
             "--auto-bootstrap-project-from-cwd",
             "--no-browser",
-            "--mode", "web"
+            "--mode", "desktop"
         ]
         proc.currentDirectoryURL = projectDirectory
+        proc.standardInput = bootstrapPipe
 
         // Inherit environment but ensure PATH includes common Node locations
         var env = ProcessInfo.processInfo.environment
@@ -111,10 +127,9 @@ final class T3CodeSidecarManager {
         env.removeValue(forKey: "T3CODE_AUTH_TOKEN")
         proc.environment = env
 
-        // Let stdout/stderr go to /dev/null — cmux relies on the known port
-        // and probes the embedded URL directly.
-        proc.standardOutput = FileHandle.nullDevice
-        proc.standardError = FileHandle.nullDevice
+        sidecarLogHandle = openSidecarLogHandle()
+        proc.standardOutput = sidecarLogHandle ?? FileHandle.nullDevice
+        proc.standardError = sidecarLogHandle ?? FileHandle.nullDevice
 
         // Handle unexpected termination.
         // Dispatch to main thread to avoid data races — terminationHandler
@@ -126,12 +141,15 @@ final class T3CodeSidecarManager {
                 self.process = nil
                 self.port = nil
                 self.stopPortPolling()
+                self.closeSidecarLogHandle()
                 self.onCrash?()
             }
         }
 
         do {
             try proc.run()
+            bootstrapPipe.fileHandleForReading.closeFile()
+            writeBootstrapEnvelope(to: bootstrapPipe.fileHandleForWriting)
             self.process = proc
             logger.info(
                 "Spawned t3code sidecar (PID \(proc.processIdentifier)) on port \(selectedPort) for \(self.projectDirectory.path)"
@@ -140,8 +158,11 @@ final class T3CodeSidecarManager {
             // confirms the actual port. This avoids the race where the OS
             // recycles our reserved port before the server binds it.
         } catch {
+            bootstrapPipe.fileHandleForReading.closeFile()
+            bootstrapPipe.fileHandleForWriting.closeFile()
             logger.error("Failed to spawn t3code sidecar: \(error.localizedDescription)")
             port = nil
+            closeSidecarLogHandle()
             return
         }
 
@@ -156,6 +177,7 @@ final class T3CodeSidecarManager {
 
         guard let proc = process, proc.isRunning else {
             process = nil
+            closeSidecarLogHandle()
             return
         }
 
@@ -175,6 +197,7 @@ final class T3CodeSidecarManager {
         process = nil
         port = nil
         hasPublishedPort = false
+        closeSidecarLogHandle()
 
         // Clean up port file
         try? FileManager.default.removeItem(atPath: portFilePath)
@@ -282,6 +305,55 @@ final class T3CodeSidecarManager {
         DispatchQueue.main.async { [weak self] in
             self?.onReady?(port)
         }
+    }
+
+    private func writeBootstrapEnvelope(to handle: FileHandle) {
+        let payload: [String: Any] = [
+            "desktopBootstrapToken": desktopBootstrapToken
+        ]
+        defer {
+            try? handle.close()
+        }
+
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload) else {
+            logger.error("Failed to encode t3code bootstrap envelope")
+            return
+        }
+
+        do {
+            try handle.write(contentsOf: data)
+        } catch {
+            logger.error("Failed to write t3code bootstrap envelope: \(error.localizedDescription)")
+        }
+    }
+
+    private func openSidecarLogHandle() -> FileHandle? {
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: sidecarLogPath) {
+            fm.createFile(atPath: sidecarLogPath, contents: nil)
+        }
+
+        guard let handle = try? FileHandle(forWritingTo: URL(fileURLWithPath: sidecarLogPath)) else {
+            self.logger.error("Failed to open t3code sidecar log at \(self.sidecarLogPath)")
+            return nil
+        }
+
+        do {
+            try handle.seekToEnd()
+            let banner = "\n=== \(ISO8601DateFormatter().string(from: Date())) sidecar start \(projectDirectory.path) ===\n"
+            try handle.write(contentsOf: Data(banner.utf8))
+            return handle
+        } catch {
+            logger.error("Failed to initialize t3code sidecar log: \(error.localizedDescription)")
+            try? handle.close()
+            return nil
+        }
+    }
+
+    private func closeSidecarLogHandle() {
+        try? sidecarLogHandle?.close()
+        sidecarLogHandle = nil
     }
 
     private func reserveAvailablePort() -> Int? {

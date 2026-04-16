@@ -7653,8 +7653,10 @@ final class Workspace: Identifiable, ObservableObject {
 
     /// Called when the t3code sidecar becomes ready. Updates all chat panels with the port.
     func notifyChatPanelsOfPort(_ port: Int) {
+        let bootstrapToken = t3codeSidecarManager?.desktopBootstrapToken
         for (_, panel) in panels {
             if let chatPanel = panel as? ChatPanel {
+                chatPanel.setLocalBootstrapToken(bootstrapToken)
                 chatPanel.loadT3CodeUI(port: port)
             }
         }
@@ -9478,7 +9480,13 @@ final class Workspace: Identifiable, ObservableObject {
         let previousFocusedPanelId = focusedPanelId
         let previousHostedView = focusedTerminalPanel?.hostedView
 
-        let chatPanel = ChatPanel(workspaceId: id, threadId: threadId, serverPort: serverPort, projectCwd: currentDirectory)
+        let chatPanel = ChatPanel(
+            workspaceId: id,
+            threadId: threadId,
+            serverPort: serverPort,
+            projectCwd: currentDirectory,
+            localBootstrapToken: t3codeSidecarManager?.desktopBootstrapToken
+        )
         chatPanel.onThreadIdChange = { [weak self, panelId = chatPanel.id] nextThreadId in
             self?.updateWriterThreadId(nextThreadId, forChatPanelId: panelId)
         }

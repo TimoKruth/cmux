@@ -9,6 +9,7 @@ import os
 final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler {
 
     private static let threadSyncMessageHandlerName = "cmuxThreadSync"
+    private static let diagnosticsMessageHandlerName = "cmuxDiagnostics"
     private static let reservedEmbeddedThreadIDs: Set<String> = ["_chat", "settings"]
     private static let threadIDPathAllowedCharacters: CharacterSet = {
         var allowed = CharacterSet.urlPathAllowed
@@ -36,6 +37,9 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
     /// can bind the thread to the correct project.
     private let projectCwd: String?
 
+    /// Stable auth bootstrap token surfaced to the embedded web app.
+    private var localBootstrapToken: String?
+
     /// The web view displaying t3code's React UI.
     private(set) var webView: CmuxWebView
 
@@ -62,21 +66,33 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
 
     // MARK: - Init
 
-    init(workspaceId: UUID, threadId: String? = nil, serverPort: Int? = nil, projectCwd: String? = nil) {
+    init(
+        workspaceId: UUID,
+        threadId: String? = nil,
+        serverPort: Int? = nil,
+        projectCwd: String? = nil,
+        localBootstrapToken: String? = nil
+    ) {
         self.id = UUID()
         self.workspaceId = workspaceId
         self.t3codeThreadId = Self.normalizedThreadId(threadId)
         self.serverPort = serverPort
         self.projectCwd = projectCwd
+        self.localBootstrapToken = localBootstrapToken
 
         let config = WKWebViewConfiguration()
         config.preferences.setValue(true, forKey: "developerExtrasEnabled")
+        Self.installDesktopBridgeUserScript(
+            on: config.userContentController,
+            bootstrapToken: localBootstrapToken
+        )
 
         let webView = CmuxWebView(frame: .zero, configuration: config)
         webView.allowsBackForwardNavigationGestures = false
         self.webView = webView
         super.init()
         config.userContentController.add(self, name: Self.threadSyncMessageHandlerName)
+        config.userContentController.add(self, name: Self.diagnosticsMessageHandlerName)
 
         if let port = serverPort {
             waitForServerAndLoad(port: port)
@@ -110,6 +126,9 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
         webView.configuration.userContentController.removeScriptMessageHandler(
             forName: Self.threadSyncMessageHandlerName
         )
+        webView.configuration.userContentController.removeScriptMessageHandler(
+            forName: Self.diagnosticsMessageHandlerName
+        )
         webView.stopLoading()
         webView.navigationDelegate = nil
         webView.uiDelegate = nil
@@ -129,44 +148,44 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
         waitForServerAndLoad(port: port)
     }
 
+    func setLocalBootstrapToken(_ token: String?) {
+        guard localBootstrapToken != token else { return }
+        localBootstrapToken = token
+        Self.installDesktopBridgeUserScript(
+            on: webView.configuration.userContentController,
+            bootstrapToken: token
+        )
+    }
+
     private func loadLiveT3CodeUI(port: Int) {
         self.serverPort = port
         self.hasLoadedServerUI = true
         self.serverReadinessTask?.cancel()
         self.serverReadinessTask = nil
 
-        // TanStack's generated route tree exposes thread pages at "/$threadId"
-        // while the embedded bootstrap/index view lives at "/_chat".
-        var urlString = "http://127.0.0.1:\(port)"
         let normalizedThreadId = Self.normalizedThreadId(t3codeThreadId)
         t3codeThreadId = normalizedThreadId
 
-        // Build query parameters. Always include embedded=1; optionally
-        // include projectCwd so t3code can bind to the correct project.
-        var queryItems = "embedded=1"
+        var components = URLComponents()
+        components.scheme = "http"
+        components.host = "127.0.0.1"
+        components.port = port
+        components.path = "/"
+
+        // Load the pathless chat root and let the web app bootstrap the correct
+        // embedded thread/workspace route from query params.
+        var queryItems = [URLQueryItem(name: "embedded", value: "1")]
         if let cwd = projectCwd {
-            // Use URLQueryItem via URLComponents for correct encoding —
-            // .urlQueryAllowed leaves & and = unescaped, which would break
-            // paths containing those characters.
-            var components = URLComponents()
-            components.queryItems = [URLQueryItem(name: "projectCwd", value: cwd)]
-            // percentEncodedQuery gives us "projectCwd=<properly-encoded>"
-            if let encoded = components.percentEncodedQuery {
-                queryItems += "&\(encoded)"
-            }
+            queryItems.append(URLQueryItem(name: "projectCwd", value: cwd))
         }
-
         if let threadId = normalizedThreadId,
-           let encodedThreadId = threadId.addingPercentEncoding(
-            withAllowedCharacters: Self.threadIDPathAllowedCharacters
-           ) {
-            urlString += "/\(encodedThreadId)?\(queryItems)"
-        } else {
-            urlString += "/_chat?\(queryItems)"
+           !threadId.isEmpty {
+            queryItems.append(URLQueryItem(name: "threadId", value: threadId))
         }
+        components.queryItems = queryItems
 
-        guard let url = URL(string: urlString) else {
-            logger.error("Invalid t3code URL: \(urlString)")
+        guard let url = components.url else {
+            logger.error("Invalid t3code URL for port \(port)")
             loadErrorPage(message: String(
                 localized: "chat.error.invalidURL",
                 defaultValue: "Failed to construct t3code URL."
@@ -252,6 +271,11 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
     }
 
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        if message.name == Self.diagnosticsMessageHandlerName {
+            logger.error("Embedded t3code diagnostics: \(String(describing: message.body), privacy: .public)")
+            return
+        }
+
         guard message.name == Self.threadSyncMessageHandlerName else { return }
 
         let rawThreadId: String
@@ -283,6 +307,122 @@ final class ChatPanel: NSObject, Panel, ObservableObject, WKScriptMessageHandler
         guard !reservedEmbeddedThreadIDs.contains(trimmed.lowercased()) else { return nil }
         guard !trimmed.contains("/") && !trimmed.contains("?") && !trimmed.contains("#") else { return nil }
         return trimmed
+    }
+
+    private static func installDesktopBridgeUserScript(
+        on userContentController: WKUserContentController,
+        bootstrapToken: String?
+    ) {
+        userContentController.removeAllUserScripts()
+        guard let bootstrapToken, !bootstrapToken.isEmpty else { return }
+
+        let script = WKUserScript(
+            source: desktopBridgeUserScript(bootstrapToken: bootstrapToken),
+            injectionTime: .atDocumentStart,
+            forMainFrameOnly: true
+        )
+        userContentController.addUserScript(script)
+    }
+
+    private static func desktopBridgeUserScript(bootstrapToken: String) -> String {
+        let tokenLiteral = javaScriptStringLiteral(bootstrapToken)
+        return """
+        (() => {
+          const bootstrapToken = \(tokenLiteral);
+          const buildBootstrap = () => {
+            const origin = window.location.origin;
+            const wsBaseUrl = origin.replace(/^http/i, (protocol) =>
+              protocol.toLowerCase() === "https" ? "wss" : "ws"
+            );
+            return {
+              label: "Local environment",
+              httpBaseUrl: origin,
+              wsBaseUrl,
+              bootstrapToken
+            };
+          };
+          const existing =
+            window.desktopBridge && typeof window.desktopBridge === "object"
+              ? window.desktopBridge
+              : {};
+          const diagnostics = window.webkit?.messageHandlers?.\(diagnosticsMessageHandlerName);
+          const report = (kind, detail) => {
+            try {
+              diagnostics?.postMessage({ kind, detail });
+            } catch {}
+          };
+          const wrapConsole = (level) => {
+            const original = console[level];
+            if (typeof original !== "function") {
+              return;
+            }
+            console[level] = function (...args) {
+              try {
+                report("console-" + level, {
+                  args: args.map((value) => {
+                    if (typeof value === "string") {
+                      return value;
+                    }
+                    if (value instanceof Error) {
+                      return value.stack || value.message;
+                    }
+                    try {
+                      return JSON.stringify(value);
+                    } catch {
+                      return String(value);
+                    }
+                  }),
+                });
+              } catch {}
+              return original.apply(this, args);
+            };
+          };
+          wrapConsole("error");
+          wrapConsole("warn");
+          window.addEventListener("error", (event) => {
+            report("error", {
+              message: event.message,
+              filename: event.filename,
+              lineno: event.lineno,
+              colno: event.colno,
+            });
+          });
+          window.addEventListener("unhandledrejection", (event) => {
+            const reason =
+              typeof event.reason === "string"
+                ? event.reason
+                : event.reason && typeof event.reason === "object" && "message" in event.reason
+                  ? event.reason.message
+                  : String(event.reason);
+            report("unhandledrejection", { reason });
+          });
+          window.addEventListener("load", () => {
+            setTimeout(() => {
+              if (document.getElementById("boot-shell")) {
+                report("boot-shell-stuck", {
+                  href: window.location.href,
+                  hash: window.location.hash,
+                  readyState: document.readyState,
+                  title: document.title,
+                });
+              }
+            }, 4000);
+          });
+          window.__CMUX_EMBEDDED__ = true;
+          window.desktopBridge = Object.assign({}, existing, {
+            getLocalEnvironmentBootstrap: () => buildBootstrap()
+          });
+        })();
+        """
+    }
+
+    private static func javaScriptStringLiteral(_ value: String) -> String {
+        guard let data = try? JSONSerialization.data(withJSONObject: [value]),
+              let encoded = String(data: data, encoding: .utf8),
+              encoded.count >= 2 else {
+            return "\"\""
+        }
+        return String(encoded.dropFirst().dropLast())
     }
 
     // MARK: - Placeholder pages

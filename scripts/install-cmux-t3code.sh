@@ -47,14 +47,17 @@ fi
 
 echo "▸ Building Release configuration..."
 XCODE_LOG="/tmp/cmux-t3code-xcodebuild.log"
+set +e
 xcodebuild \
   -project GhosttyTabs.xcodeproj \
   -scheme cmux \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA" \
-  build 2>&1 | tee "$XCODE_LOG" | grep -E '(warning:|error:|fatal:|BUILD FAILED|BUILD SUCCEEDED|\*\* BUILD)' || true
-XCODE_EXIT="${PIPESTATUS[0]}"
+  build 2>&1 | tee "$XCODE_LOG" | grep -E '(warning:|error:|fatal:|BUILD FAILED|BUILD SUCCEEDED|\*\* BUILD)'
+XCODE_PIPESTATUS=("${PIPESTATUS[@]}")
+set -e
+XCODE_EXIT="${XCODE_PIPESTATUS[0]}"
 echo "Full build log: $XCODE_LOG"
 [[ "$XCODE_EXIT" -ne 0 ]] && echo "error: build failed ($XCODE_EXIT)" >&2 && exit "$XCODE_EXIT"
 echo "▸ Build succeeded."
